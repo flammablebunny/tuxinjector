@@ -159,19 +159,31 @@ fn find_lib_paths_by_substring(sub: &str) -> Vec<std::ffi::CString> {
     out
 }
 
-// check if an address lives inside libtuxinjector.so (i.e. us)
+// check if an address lives inside our .so (i.e. us)
+// cargo can produce either "libtuxinjector.so" or "tuxinjector.so"
 fn is_own_library(addr: usize) -> bool {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
         if libc::dladdr(addr as *const c_void, &mut info) != 0 && !info.dli_fname.is_null() {
             let name = std::ffi::CStr::from_ptr(info.dli_fname).to_bytes();
-            return name.windows(14).any(|w| w == b"libtuxinjector");
+            // match "libtuxinjector" (14 bytes) or "/tuxinjector." (13 bytes)
+            if name.windows(14).any(|w| w == b"libtuxinjector") {
+                return true;
+            }
+            if name.windows(13).any(|w| w == b"/tuxinjector.") {
+                return true;
+            }
         }
     }
     false
 }
 
 unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
+    // use real_dlsym (via dlvsym) to bypass our own dlsym hook -
+    // libc::dlsym goes through our #[no_mangle] dlsym which stores
+    // our PLT address into REAL_GL_* OnceLocks as a side effect
+    use crate::dlsym_hook::{resolve_real_symbol_default, resolve_real_symbol_from};
+
     let is_self = |p: *mut c_void| -> bool {
         if p.is_null() { return true; }
         if p as usize == self_addr { return true; }
@@ -182,8 +194,8 @@ unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
         own
     };
 
-    // try RTLD_DEFAULT first
-    let ptr = libc::dlsym(libc::RTLD_DEFAULT, sym.as_ptr() as *const libc::c_char);
+    // try RTLD_DEFAULT first (via real dlsym, not our hook)
+    let ptr = resolve_real_symbol_default(sym);
     if !is_self(ptr) {
         tracing::info!(addr = ?ptr, "resolve_gl_sym: found via RTLD_DEFAULT");
         return ptr as *mut u8;
@@ -196,7 +208,7 @@ unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
     for &lib in libs {
         let handle = libc::dlopen(lib.as_ptr() as *const libc::c_char, libc::RTLD_LAZY | libc::RTLD_GLOBAL);
         if handle.is_null() { continue; }
-        let p = libc::dlsym(handle, sym.as_ptr() as *const libc::c_char);
+        let p = resolve_real_symbol_from(handle, sym);
         if !is_self(p) {
             tracing::info!(addr = ?p, lib = ?std::ffi::CStr::from_ptr(lib.as_ptr() as *const _),
                 "resolve_gl_sym: found via dlopen");
@@ -209,7 +221,7 @@ unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
         for cs in find_lib_paths_by_substring(sub) {
             let handle = libc::dlopen(cs.as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL);
             if handle.is_null() { continue; }
-            let p = libc::dlsym(handle, sym.as_ptr() as *const libc::c_char);
+            let p = resolve_real_symbol_from(handle, sym);
             if !is_self(p) {
                 return p as *mut u8;
             }

@@ -58,10 +58,17 @@ fn real_dlsym() -> DlsymFn {
     *REAL_DLSYM.get_or_init(resolve_real_dlsym)
 }
 
-/// Resolve a symbol via the real dlsym. Name must be NUL-terminated.
+/// Resolve a symbol via the real dlsym (RTLD_NEXT). Name must be NUL-terminated.
 pub(crate) fn resolve_real_symbol(name: &[u8]) -> *mut c_void {
     debug_assert!(name.last() == Some(&0), "name must be NUL-terminated");
     unsafe { real_dlsym()(RTLD_NEXT, name.as_ptr() as *const c_char) }
+}
+
+/// Resolve via RTLD_DEFAULT (global scope search). Name must be NUL-terminated.
+pub(crate) fn resolve_real_symbol_default(name: &[u8]) -> *mut c_void {
+    debug_assert!(name.last() == Some(&0), "name must be NUL-terminated");
+    // libc::RTLD_DEFAULT is typically NULL on glibc
+    unsafe { real_dlsym()(std::ptr::null_mut(), name.as_ptr() as *const c_char) }
 }
 
 /// Same but from a specific handle.

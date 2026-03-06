@@ -490,6 +490,14 @@ unsafe fn center_game_content(
     orig_w: u32,
     orig_h: u32,
 ) {
+    static LOG_ONCE: std::sync::Once = std::sync::Once::new();
+    LOG_ONCE.call_once(|| {
+        tracing::info!(mode_w, mode_h, orig_w, orig_h,
+            vfb_active = crate::virtual_fb::is_active(),
+            vfb_fbo = crate::virtual_fb::virtual_fbo(),
+            "center_game_content: first call");
+    });
+
     // figure out src/dst offsets per axis
     let (src_x, src_y, dst_x, dst_y, bw, bh);
 
@@ -569,14 +577,20 @@ unsafe fn center_game_content(
     (gl.get_integer_v)(GL_DRAW_BUFFER, &mut prev_draw);
     (gl.get_integer_v)(GL_READ_BUFFER, &mut prev_read);
 
-    // for oversized modes, try reading from the game's internal FBO.
-    // if the glBindFramebuffer hook isn't active, the virtual_fb redirect
-    // never fired so the game rendered to the real backbuffer (FBO 0).
+    // for oversized modes, read from the game's internal FBO first
+    // (Sodium creates one matching mode dimensions), then fall back to
+    // virtual_fb or FBO 0
     let read_fbo = if mode_h > orig_h || mode_w > orig_w {
-        if crate::viewport_hook::is_glbindframebuffer_hooked() {
-            let f = unsafe { find_game_fbo(gl, mode_w, mode_h) };
-            if f != 0 { f } else { 0 }
+        let game = unsafe { find_game_fbo(gl, mode_w, mode_h) };
+        if game != 0 {
+            tracing::debug!(game, "center_game_content: reading from game FBO");
+            game
+        } else if crate::virtual_fb::is_active() {
+            let vfb = crate::virtual_fb::virtual_fbo();
+            tracing::debug!(vfb, "center_game_content: reading from virtual FBO");
+            if vfb != 0 { vfb } else { 0 }
         } else {
+            tracing::debug!("center_game_content: reading from FBO 0");
             0
         }
     } else {
@@ -654,10 +668,13 @@ unsafe fn render_overlay() {
                 let _oversized = mw > 0 && mh > 0
                     && crate::viewport_hook::is_oversized(mw, mh, w, h);
 
-                if mw > 0 && mh > 0 && (mw != w || mh != h)
-                    && !crate::viewport_hook::is_gl_viewport_hooked()
-                {
-                    center_game_content(gl, mw, mh, w, h);
+                if mw > 0 && mh > 0 && (mw != w || mh != h) {
+                    let oversized = crate::viewport_hook::is_oversized(mw, mh, w, h);
+                    // oversized always needs blit-back from virtual FBO;
+                    // undersized only needs centering when viewport hook isn't active
+                    if oversized || !crate::viewport_hook::is_gl_viewport_hooked() {
+                        center_game_content(gl, mw, mh, w, h);
+                    }
                 }
 
                 (gl.viewport)(0, 0, w as i32, h as i32);
