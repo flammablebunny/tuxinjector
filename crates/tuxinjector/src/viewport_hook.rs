@@ -572,10 +572,6 @@ pub fn is_gl_viewport_hooked() -> bool {
     GL_VIEWPORT_SEEN.load(Ordering::Relaxed)
 }
 
-pub fn is_glbindframebuffer_hooked() -> bool {
-    REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_some()
-}
-
 // --- Captured game state ---
 
 static GAME_EGL_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
