@@ -1,5 +1,5 @@
 {
-  description = "Tuxinjector Linux - Minecraft speedrunning overlay (Rust + Vulkan)";
+  description = "Tuxinjector - Minecraft speedrunning overlay for Linux";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -20,16 +20,11 @@
           extensions = [ "rust-src" "rust-analyzer" "clippy" ];
         };
 
+        # libs needed at build time
         buildInputs = with pkgs; [
-          vulkan-headers
-          vulkan-loader
-          vulkan-validation-layers
-          shaderc
           libGL
           libGLU
           mesa
-          wayland
-          wayland-protocols
           libxkbcommon
           libx11
           libxrandr
@@ -41,29 +36,72 @@
           dbus
         ];
 
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
+        # minimal nativeBuildInputs for the package build
+        pkgNativeBuildInputs = with pkgs; [
           pkg-config
           cmake
-          ninja
-          gcc
-          python3
           clang
           llvmPackages.libclang
-          python3Packages.mkdocs
-          python3Packages.mkdocs-material
-          python3Packages.pymdown-extensions
         ];
+
+        # X11 libs that companion apps (nbb) need at runtime,
+        # but the game doesn't load. The wrapper sets TUXINJECTOR_X11_LIBS so
+        # the .so can pass them to companion apps using LD_LIBRARY_PATH.
+        x11Libs = pkgs.lib.makeLibraryPath (with pkgs; [
+          libxtst
+          libxi
+          libxt
+          libxinerama
+          libxkbcommon
+          libx11
+          libxcb
+          libxext
+          libxrender
+          libxfixes
+          libxrandr
+          libxcursor
+        ]);
+
+        tuxinjector = pkgs.rustPlatform.buildRustPackage {
+          pname = "tuxinjector";
+          version = "1.0.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+
+          inherit buildInputs;
+          nativeBuildInputs = pkgNativeBuildInputs;
+
+          env.LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          meta = with pkgs.lib; {
+            description = "Minecraft speedrunning overlay for Linux";
+            license = licenses.gpl3;
+            platforms = platforms.linux;
+          };
+        };
+
+        # Wrapper script for Prism/MCSR Launcher. Sets LD_PRELOAD and TUXINJECTOR_X11_LIBS,
+        # then execs the launcher. Use as the launchers wrapper command.
+        wrapper = pkgs.writeShellScriptBin "tuxinjector" ''
+          export LD_PRELOAD="${tuxinjector}/lib/libtuxinjector.so"
+          export TUXINJECTOR_X11_LIBS="${x11Libs}"
+          exec "$@"
+        '';
       in
       {
         devShells.default = pkgs.mkShell {
-          inherit buildInputs nativeBuildInputs;
+          inherit buildInputs;
+          nativeBuildInputs = pkgNativeBuildInputs ++ (with pkgs; [
+            rustToolchain
+            python3Packages.mkdocs
+            python3Packages.mkdocs-material
+            python3Packages.pymdown-extensions
+          ]);
 
           shellHook = ''
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}:$LD_LIBRARY_PATH"
-            export VK_LAYER_PATH="${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d"
-            export SHADERC_LIB_DIR="${pkgs.shaderc.lib}/lib"
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+            export TUXINJECTOR_X11_LIBS="${x11Libs}"
             echo "tuxinjector dev shell ready"
             echo "  cargo build --release    # build the .so"
             echo "  cargo test               # run tests"
@@ -72,22 +110,8 @@
           '';
         };
 
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "tuxinjector";
-          version = "1.0.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-
-          inherit buildInputs nativeBuildInputs;
-
-          SHADERC_LIB_DIR = "${pkgs.shaderc.lib}/lib";
-
-          meta = with pkgs.lib; {
-            description = "Minecraft speedrunning overlay for Linux";
-            license = licenses.mit;
-            platforms = platforms.linux;
-          };
-        };
+        packages.default = wrapper;
+        packages.lib = tuxinjector;
       }
     );
 }

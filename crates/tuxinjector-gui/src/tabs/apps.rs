@@ -242,10 +242,10 @@ fn uninstall_app(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-// Build LD_LIBRARY_PATH so Java AWT can find X11/GL libs on NixOS.
-// Scrapes /proc/self/maps for /nix/store/*/lib paths, then resolves
-// additional X11 libs (libXtst, libXi, etc.) that companion apps need
-// but the game doesn't load.
+// Build LD_LIBRARY_PATH so Java AWT can find X11/GL libs.
+// Scrapes /proc/self/maps for /nix/store/*/lib paths (covers what the game loads),
+// reads TUXINJECTOR_X11_LIBS for the additional libs companion apps like nbb need 
+// (set by the NixOS wrapper), and keeps the inherited LD_LIBRARY_PATH.
 fn nix_ld_path() -> String {
     let mut dirs = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -261,8 +261,9 @@ fn nix_ld_path() -> String {
         }
     }
 
-    // on NixOS, resolve X11 libs that companion apps need (cached)
-    if let Some(x11) = nixos_x11_lib_path() {
+    // X11 libs that companion apps need but the game doesn't load.
+    // Set by the NixOS wrapper via makeLibraryPath.
+    if let Ok(x11) = std::env::var("TUXINJECTOR_X11_LIBS") {
         for entry in x11.split(':') {
             if !entry.is_empty() && seen.insert(entry.to_string()) {
                 dirs.push(entry.to_string());
@@ -280,36 +281,6 @@ fn nix_ld_path() -> String {
     }
 
     dirs.join(":")
-}
-
-// Resolve X11 library paths on NixOS via `nix eval`. Cached per session.
-fn nixos_x11_lib_path() -> Option<String> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        if !std::path::Path::new("/etc/NIXOS").exists() {
-            return None;
-        }
-        let expr = concat!(
-            "with import <nixpkgs> {}; lib.makeLibraryPath [ ",
-            "libxtst libxi libxt libxinerama libxkbcommon ",
-            "libx11 libxcb libxext libxrender libxfixes libxrandr libxcursor ",
-            "]",
-        );
-        let output = std::process::Command::new("nix")
-            .args(["eval", "--raw", "--impure", "--expr", expr])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            tracing::warn!("nix eval failed for X11 libs, companion app hotkeys may not work");
-            return None;
-        }
-        let paths = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if paths.is_empty() { None } else {
-            tracing::info!(libs = %paths, "resolved NixOS X11 library paths");
-            Some(paths)
-        }
-    }).clone()
 }
 
 // Resolve the java binary: prefer the game's own JVM (via /proc/self/exe),
