@@ -1233,7 +1233,7 @@ impl Default for EyeZoomConfig {
     fn default() -> Self {
         Self {
             clone_width: 30,
-            overlay_width: 12,
+            overlay_width: 30,
             clone_height: 1300,
             stretch_width: 810,
             window_width: 384,
@@ -1256,7 +1256,7 @@ impl Default for EyeZoomConfig {
             highlight_color: defaults::eyezoom_highlight_color(),
             highlight_color_opacity: 1.0,
             highlight_interval: 10,
-            number_style: String::from("stacked"),
+            number_style: String::from("slackow"),
             slide_zoom_in: true,
             slide_mirrors_in: true,
         }
