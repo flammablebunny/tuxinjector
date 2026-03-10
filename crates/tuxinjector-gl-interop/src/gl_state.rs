@@ -35,6 +35,13 @@ pub unsafe fn restore_minecraft_state(gl: &GlFns, vp: [i32; 4]) {
     (gl.use_program)(0);
     (gl.bind_vertex_array)(0);
     (gl.bind_buffer)(GL_ARRAY_BUFFER, 0);
+    (gl.bind_buffer)(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    // Disable vertex attrib arrays so they don't interfere with
+    // fixed-function / immediate-mode rendering (macOS GL 2.1).
+    (gl.disable_vertex_attrib_array)(0);
+    (gl.disable_vertex_attrib_array)(1);
+    (gl.disable_vertex_attrib_array)(2);
     (gl.active_texture)(GL_TEXTURE0);
     (gl.bind_texture)(GL_TEXTURE_2D, 0);
 

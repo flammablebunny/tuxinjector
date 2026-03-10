@@ -1,8 +1,8 @@
 // More LLM code, i know, i know. I swear im not always this lazy
 //
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // Module: gl_bindings — OpenGL Constants, Types & Function Pointer Typedefs
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 //
 // Hand-rolled GL bindings rather than a full binding crate — we only
 // require a small subset, and must avoid symbol collisions with the
@@ -10,7 +10,7 @@
 
 use std::ffi::{c_char, c_void};
 
-// ── Type Aliases ────────────────────────────────────────────────────────
+// -- Type Aliases --------------------------------------------------------
 
 #[allow(non_camel_case_types)]
 pub type GLenum = u32;
@@ -33,7 +33,7 @@ pub type GLchar = c_char;
 #[allow(non_camel_case_types)]
 pub type GLuint64 = u64;
 
-// ── GL Constants ────────────────────────────────────────────────────────
+// -- GL Constants --------------------------------------------------------
 
 pub const GL_TEXTURE_2D: GLenum = 0x0DE1;
 
@@ -117,7 +117,7 @@ pub const GL_HANDLE_TYPE_OPAQUE_FD_EXT: GLenum = 0x9586;
 pub const GL_TEXTURE_TILING_EXT: GLenum = 0x9580;
 pub const GL_OPTIMAL_TILING_EXT: GLenum = 0x9584;
 
-// ── Function Pointer Type Definitions ───────────────────────────────────
+// -- Function Pointer Type Definitions -----------------------------------
 
 macro_rules! gl_fn_type {
     ($name:ident => unsafe fn($($arg:ident : $arg_ty:ty),* $(,)?) $(-> $ret:ty)?) => {
@@ -188,7 +188,9 @@ gl_fn_type!(PfnGlBufferData           => unsafe fn(target: GLenum, size: GLsizei
 // Drawing / vertex attribs
 gl_fn_type!(PfnGlDrawArrays           => unsafe fn(mode: GLenum, first: GLint, count: GLsizei));
 gl_fn_type!(PfnGlEnableVertexAttribArray  => unsafe fn(index: GLuint));
+gl_fn_type!(PfnGlDisableVertexAttribArray => unsafe fn(index: GLuint));
 gl_fn_type!(PfnGlVertexAttribPointer  => unsafe fn(index: GLuint, size: GLint, ty: GLenum, normalized: GLboolean, stride: GLsizei, pointer: *const c_void));
+gl_fn_type!(PfnGlBindAttribLocation   => unsafe fn(program: GLuint, index: GLuint, name: *const GLchar));
 
 // Framebuffer
 gl_fn_type!(PfnGlBindFramebuffer      => unsafe fn(target: GLenum, framebuffer: GLuint));
@@ -275,7 +277,9 @@ pub struct GlFns {
     // Drawing
     pub draw_arrays: PfnGlDrawArrays,
     pub enable_vertex_attrib_array: PfnGlEnableVertexAttribArray,
+    pub disable_vertex_attrib_array: PfnGlDisableVertexAttribArray,
     pub vertex_attrib_pointer: PfnGlVertexAttribPointer,
+    pub bind_attrib_location: PfnGlBindAttribLocation,
 
     // Framebuffer
     pub bind_framebuffer: PfnGlBindFramebuffer,
@@ -382,9 +386,18 @@ impl GlFns {
             clear: resolve!(required get_proc, "glClear"),
             clear_color: resolve!(required get_proc, "glClearColor"),
 
-            // VAO
+            // VAO — macOS GL 2.1 compat needs GL_APPLE_vertex_array_object extension
+            #[cfg(target_os = "macos")]
+            gen_vertex_arrays: resolve!(required get_proc, "glGenVertexArraysAPPLE"),
+            #[cfg(target_os = "macos")]
+            delete_vertex_arrays: resolve!(required get_proc, "glDeleteVertexArraysAPPLE"),
+            #[cfg(target_os = "macos")]
+            bind_vertex_array: resolve!(required get_proc, "glBindVertexArrayAPPLE"),
+            #[cfg(target_os = "linux")]
             gen_vertex_arrays: resolve!(required get_proc, "glGenVertexArrays"),
+            #[cfg(target_os = "linux")]
             delete_vertex_arrays: resolve!(required get_proc, "glDeleteVertexArrays"),
+            #[cfg(target_os = "linux")]
             bind_vertex_array: resolve!(required get_proc, "glBindVertexArray"),
 
             // Buffers
@@ -396,7 +409,9 @@ impl GlFns {
             // Drawing
             draw_arrays: resolve!(required get_proc, "glDrawArrays"),
             enable_vertex_attrib_array: resolve!(required get_proc, "glEnableVertexAttribArray"),
+            disable_vertex_attrib_array: resolve!(required get_proc, "glDisableVertexAttribArray"),
             vertex_attrib_pointer: resolve!(required get_proc, "glVertexAttribPointer"),
+            bind_attrib_location: resolve!(required get_proc, "glBindAttribLocation"),
 
             // Framebuffer
             bind_framebuffer: resolve!(required get_proc, "glBindFramebuffer"),
