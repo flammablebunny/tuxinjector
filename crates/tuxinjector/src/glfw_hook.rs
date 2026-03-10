@@ -31,6 +31,9 @@ pub fn store_real_glfw_get_proc_address(ptr: *mut c_void) {
 
 #[no_mangle]
 pub unsafe extern "C" fn glfwGetProcAddress(name: *const c_char) -> *mut c_void {
+    // log once to stderr so we know our hook is alive (before tracing is up)
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("[tuxinjector] glfwGetProcAddress hooked"));
     let real = REAL_GLFW_GET_PROC_ADDRESS.get_or_init(|| {
         let ptr = libc::dlsym(
             libc::RTLD_NEXT,

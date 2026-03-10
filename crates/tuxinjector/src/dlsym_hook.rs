@@ -14,23 +14,25 @@ use crate::viewport_hook;
 type DlsymFn = unsafe extern "C" fn(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 
 // glibc: RTLD_NEXT = (void *) -1
+#[cfg(target_os = "linux")]
 const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 
 // --- resolving the *real* dlsym ---
 
-extern "C" {
-    fn dlvsym(
-        handle: *mut c_void,
-        symbol: *const c_char,
-        version: *const c_char,
-    ) -> *mut c_void;
-}
-
 static REAL_DLSYM: OnceLock<DlsymFn> = OnceLock::new();
 
-// We have to use dlvsym to get the real dlsym because we've
-// interposed dlsym itself. Tries GLIBC_2.34 first, 2.2.5 fallback.
+// Linux: we need dlvsym to get the real dlsym since we've replaced it.
+// Try GLIBC_2.34 first (newer), fall back to 2.2.5.
+#[cfg(target_os = "linux")]
 fn resolve_real_dlsym() -> DlsymFn {
+    extern "C" {
+        fn dlvsym(
+            handle: *mut c_void,
+            symbol: *const c_char,
+            version: *const c_char,
+        ) -> *mut c_void;
+    }
+
     const NAME: &[u8] = b"dlsym\0";
     const V234: &[u8] = b"GLIBC_2.34\0";
     const V225: &[u8] = b"GLIBC_2.2.5\0";
@@ -54,24 +56,47 @@ fn resolve_real_dlsym() -> DlsymFn {
     }
 }
 
+// macOS: __interpose redirects our own dlsym calls too, so RTLD_NEXT would
+// recurse. Read the real address straight from the interpose struct instead.
+#[cfg(target_os = "macos")]
+fn resolve_real_dlsym() -> DlsymFn {
+    let ptr = macos_interpose::original_dlsym_ptr();
+    if ptr.is_null() {
+        panic!("tuxinjector: __interpose original dlsym pointer is null");
+    }
+    eprintln!("[tuxinjector] resolve_real_dlsym: real dlsym at {ptr:p}");
+    unsafe { std::mem::transmute::<*mut c_void, DlsymFn>(ptr) }
+}
+
 fn real_dlsym() -> DlsymFn {
     *REAL_DLSYM.get_or_init(resolve_real_dlsym)
 }
 
-/// Resolve a symbol via the real dlsym (RTLD_NEXT). Name must be NUL-terminated.
+// Resolve a symbol via the real dlsym. Name must be NUL-terminated.
+// Linux uses RTLD_NEXT, macOS uses RTLD_DEFAULT (OpenGL.framework
+// isn't visible through RTLD_NEXT).
 pub(crate) fn resolve_real_symbol(name: &[u8]) -> *mut c_void {
     debug_assert!(name.last() == Some(&0), "name must be NUL-terminated");
-    unsafe { real_dlsym()(RTLD_NEXT, name.as_ptr() as *const c_char) }
+    #[cfg(target_os = "macos")]
+    let handle = libc::RTLD_DEFAULT;
+    #[cfg(target_os = "linux")]
+    let handle = RTLD_NEXT;
+    unsafe { real_dlsym()(handle, name.as_ptr() as *const c_char) }
 }
 
-/// Resolve via RTLD_DEFAULT (global scope search). Name must be NUL-terminated.
+// Resolve via RTLD_DEFAULT (global scope). Name must be NUL-terminated.
+#[cfg(target_os = "linux")]
 pub(crate) fn resolve_real_symbol_default(name: &[u8]) -> *mut c_void {
     debug_assert!(name.last() == Some(&0), "name must be NUL-terminated");
-    // libc::RTLD_DEFAULT is typically NULL on glibc
-    unsafe { real_dlsym()(std::ptr::null_mut(), name.as_ptr() as *const c_char) }
+    #[cfg(target_os = "macos")]
+    let handle = libc::RTLD_DEFAULT;
+    #[cfg(target_os = "linux")]
+    let handle = std::ptr::null_mut(); // glibc: RTLD_DEFAULT is just NULL
+    unsafe { real_dlsym()(handle, name.as_ptr() as *const c_char) }
 }
 
 /// Same but from a specific handle.
+#[cfg(target_os = "linux")]
 pub(crate) fn resolve_real_symbol_from(handle: *mut c_void, name: &[u8]) -> *mut c_void {
     debug_assert!(name.last() == Some(&0), "name must be NUL-terminated");
     unsafe { real_dlsym()(handle, name.as_ptr() as *const c_char) }
@@ -79,11 +104,14 @@ pub(crate) fn resolve_real_symbol_from(handle: *mut c_void, name: &[u8]) -> *mut
 
 // --- dlopen hook ---
 
+#[cfg(target_os = "linux")]
 type DlopenFn = unsafe extern "C" fn(*const c_char, libc::c_int) -> *mut c_void;
+#[cfg(target_os = "linux")]
 static REAL_DLOPEN: OnceLock<DlopenFn> = OnceLock::new();
 
-// Strip RTLD_DEEPBIND so LWJGL3 JNI libs resolve from the global namespace,
-// which makes our #[no_mangle] GL/GLFW exports visible to them.
+// Strip RTLD_DEEPBIND so LWJGL3 JNI libs see our #[no_mangle] GL/GLFW hooks.
+// macOS doesn't have RTLD_DEEPBIND at all.
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut c_void {
     let real = REAL_DLOPEN.get_or_init(|| {
@@ -91,17 +119,24 @@ pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut
         assert!(!ptr.is_null(), "tuxinjector: can't resolve real dlopen");
         std::mem::transmute(ptr)
     });
-    let clean = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
-    if clean != flags {
-        tracing::debug!("dlopen: stripped RTLD_DEEPBIND");
-    }
+
+    #[cfg(target_os = "linux")]
+    let clean = {
+        let c = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
+        if c != flags { tracing::debug!("dlopen: stripped RTLD_DEEPBIND"); }
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let clean = flags;
+
     real(path, clean)
 }
 
 // --- the big dlsym hook ---
+// Linux: LD_PRELOAD shadows the real dlsym
+// macOS: __DATA,__interpose makes dyld redirect calls from all images
 
-#[no_mangle]
-pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
     if symbol.is_null() {
         return real_dlsym()(handle, symbol);
     }
@@ -109,8 +144,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
     let name = unsafe { CStr::from_ptr(symbol) };
     let bytes = name.to_bytes();
 
-    // somebody should refactor this into a macro, but i'm too lazy to
-    // (each arm: resolve real, stash it, return our hook)
+    // resolve real ptr, stash it, hand back our hook
     macro_rules! hook {
         ($store:expr, $replacement:expr) => {{
             let real_ptr = real_dlsym()(handle, symbol);
@@ -120,7 +154,8 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
     }
 
     match bytes {
-        // EGL
+        // -- EGL --
+        #[cfg(target_os = "linux")]
         b"eglGetProcAddress" => {
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
@@ -130,6 +165,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             hooked_egl_get_proc_address as *mut c_void
         }
 
+        #[cfg(target_os = "linux")]
         b"eglSwapBuffers" => {
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
@@ -147,7 +183,8 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             swap_hook::hooked_egl_swap_buffers as *mut c_void
         }
 
-        // GLX
+        // -- GLX --
+        #[cfg(target_os = "linux")]
         b"glXGetProcAddressARB" => {
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
@@ -157,6 +194,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             hooked_egl_get_proc_address as *mut c_void
         }
 
+        #[cfg(target_os = "linux")]
         b"glXSwapBuffers" => {
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
@@ -173,17 +211,38 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             swap_hook::hooked_glx_swap_buffers as *mut c_void
         }
 
+        // -- CGL --
+        #[cfg(target_os = "macos")]
+        b"CGLFlushDrawable" => {
+            hook!(swap_hook::store_real_cgl_flush, swap_hook::hooked_cgl_flush)
+        }
+
+        // -- glfwSwapBuffers (macOS swap entry point) --
+        #[cfg(target_os = "macos")]
+        b"glfwSwapBuffers" => {
+            let real_ptr = real_dlsym()(handle, symbol);
+            if !real_ptr.is_null() {
+                swap_hook::store_real_glfw_swap(real_ptr);
+                eprintln!("[tuxinjector] hooked glfwSwapBuffers via dlsym interpose");
+                tracing::info!("hooked glfwSwapBuffers via dlsym interpose");
+            }
+            swap_hook::hooked_glfw_swap_buffers as *mut c_void
+        }
+
         // GLFW proc address
         b"glfwGetProcAddress" => {
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 glfw_hook::store_real_glfw_get_proc_address(real_ptr);
+                // macOS: GLFW GPA is our main way to get GL fn ptrs
+                #[cfg(target_os = "macos")]
+                gl_resolve::store_glfw_get_proc_address(real_ptr);
                 tracing::info!("hooked glfwGetProcAddress");
             }
             glfw_hook::glfwGetProcAddress as *mut c_void
         }
 
-        // ── GL Viewport & Framebuffer Hooks ──
+        // -- GL viewport & framebuffer hooks --
         // (LLM made or organised. Im too tired to write all of this stuff right now)
         b"glViewport"           => hook!(viewport_hook::store_real_gl_viewport, viewport_hook::glViewport),
         b"glBlitFramebuffer"    => hook!(viewport_hook::store_real_gl_blit_framebuffer, viewport_hook::glBlitFramebuffer),
@@ -195,7 +254,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
         b"glReadBuffer"         => hook!(viewport_hook::store_real_gl_read_buffer, viewport_hook::glReadBuffer),
         b"glDrawBuffers"        => hook!(viewport_hook::store_real_gl_draw_buffers, viewport_hook::glDrawBuffers),
 
-        // ── GLFW Input Callbacks ──
+        // -- GLFW input callbacks --
         b"glfwSetKeyCallback"             => hook!(tuxinjector_input::callbacks::store_real_set_key_callback, hooked_set_key_callback),
         b"glfwSetMouseButtonCallback"     => hook!(tuxinjector_input::callbacks::store_real_set_mouse_button_callback, hooked_set_mouse_button_callback),
         b"glfwSetCursorPosCallback"       => hook!(tuxinjector_input::callbacks::store_real_set_cursor_pos_callback, hooked_set_cursor_pos_callback),
@@ -241,6 +300,29 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
 
         _ => real_dlsym()(handle, symbol),
     }
+}
+
+#[cfg(target_os = "linux")]
+#[no_mangle]
+pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+    dlsym_hook_impl(handle, symbol)
+}
+
+// macOS entry point -- dyld routes ALL dlsym calls here via __interpose
+#[cfg(target_os = "macos")]
+pub(crate) unsafe extern "C" fn hooked_dlsym_macos(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+    use std::sync::atomic::{AtomicU32, Ordering as AtOrd};
+    static CALL_N: AtomicU32 = AtomicU32::new(0);
+    let n = CALL_N.fetch_add(1, AtOrd::Relaxed);
+    if n < 10 {
+        if !symbol.is_null() {
+            let s = std::ffi::CStr::from_ptr(symbol);
+            eprintln!("[tuxinjector] dlsym #{n}: {s:?}");
+        } else {
+            eprintln!("[tuxinjector] dlsym #{n}: (null symbol)");
+        }
+    }
+    dlsym_hook_impl(handle, symbol)
 }
 
 // --- hooked GLFW callback wrappers ---
@@ -304,8 +386,9 @@ unsafe extern "C" fn hooked_set_input_mode(window: GlfwWindow, mode: i32, value:
 
 // --- hooked eglGetProcAddress / glXGetProcAddressARB ---
 
-// Intercepts GL function pointer queries so we can hook viewport/framebuffer calls.
-// Same idea as the dlsym hook above but for the GL loader path.
+// Same idea as the dlsym hook but for eglGetProcAddress / glXGetProcAddressARB.
+// Intercepts GL function pointer queries so viewport/framebuffer hooks land.
+#[cfg(target_os = "linux")]
 unsafe extern "C" fn hooked_egl_get_proc_address(name: *const c_char) -> *mut c_void {
     use std::ffi::CStr;
 
@@ -340,5 +423,44 @@ unsafe extern "C" fn hooked_egl_get_proc_address(name: *const c_char) -> *mut c_
         f(name)
     } else {
         std::ptr::null_mut()
+    }
+}
+
+// --- macOS __interpose for dlsym ---
+// LWJGL calls dlsym(glfw_handle, "glfwSwapBuffers") with a specific handle,
+// which #[no_mangle] exports can't catch. __interpose redirects everything.
+#[cfg(target_os = "macos")]
+mod macos_interpose {
+    use std::ffi::{c_char, c_void};
+
+    type DlsymFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
+
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    #[repr(C)]
+    struct DyldInterpose {
+        replacement: DlsymFn,
+        original: DlsymFn,
+    }
+    unsafe impl Sync for DyldInterpose {}
+
+    #[used]
+    #[link_section = "__DATA,__interpose"]
+    static INTERPOSE_DLSYM: DyldInterpose = DyldInterpose {
+        replacement: super::hooked_dlsym_macos,
+        original: dlsym,
+    };
+
+    // dyld filled this in during BIND, so it's the real libSystem dlsym
+    pub(super) fn original_dlsym_ptr() -> *mut c_void {
+        unsafe {
+            // read_volatile forces an actual load from memory -- the struct
+            // lives in __DATA,__interpose and dyld patches it at load time
+            std::mem::transmute::<DlsymFn, *mut c_void>(
+                core::ptr::read_volatile(core::ptr::addr_of!(INTERPOSE_DLSYM.original))
+            )
+        }
     }
 }

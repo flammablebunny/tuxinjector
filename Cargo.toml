@@ -45,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # FFI
 libc = "0.2"
+mach2 = "0.4"
 x11rb = { version = "0.13", features = ["res"] }
 
 # Init

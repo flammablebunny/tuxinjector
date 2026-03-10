@@ -1,6 +1,10 @@
 // tuxinjector - minecraft speedrunning overlay
 // hooks into dlsym to grab EGL/GLX swap + GLFW input via LD_PRELOAD
 
+#[cfg(target_os = "linux")]
+mod app_capture;
+#[cfg(target_os = "macos")]
+#[path = "app_capture_macos.rs"]
 mod app_capture;
 mod config_init;
 mod dlsym_hook;
@@ -35,6 +39,14 @@ use tracing_subscriber::prelude::*;
 
 // needs to outlive everything or hot-reload breaks
 static CONFIG_WATCHER: Mutex<Option<tuxinjector_config::ConfigWatcher>> = Mutex::new(None);
+
+// macOS uses ~/.config/tuxinjector for everything; Linux uses ~/.local/share/tuxinjector for data
+pub(crate) fn data_subpath() -> &'static str {
+    #[cfg(target_os = "macos")]
+    { ".config/tuxinjector" }
+    #[cfg(target_os = "linux")]
+    { ".local/share/tuxinjector" }
+}
 
 // handle for swapping the tracing filter at runtime from the debug tab
 static LOG_FILTER_UPDATER: OnceLock<Box<dyn Fn(EnvFilter) + Send + Sync>> = OnceLock::new();
@@ -102,10 +114,12 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
 
 #[ctor]
 fn init() {
-    // nuke LD_PRELOAD so child processes (e.g. prism launcher helper)
-    // don't inherit us and break everything
+    // clear the preload env var so child processes don't get us injected too
     unsafe {
+        #[cfg(target_os = "linux")]
         libc::unsetenv(b"LD_PRELOAD\0".as_ptr() as *const libc::c_char);
+        #[cfg(target_os = "macos")]
+        libc::unsetenv(b"DYLD_INSERT_LIBRARIES\0".as_ptr() as *const libc::c_char);
     }
 
     // reloadable filter - we flip debug logging from the GUI at runtime
@@ -126,7 +140,10 @@ fn init() {
         })
     });
 
+    #[cfg(target_os = "linux")]
     tracing::info!("tuxinjector: loaded via LD_PRELOAD");
+    #[cfg(target_os = "macos")]
+    tracing::info!("tuxinjector: loaded via DYLD_INSERT_LIBRARIES");
 
     let watcher = config_init::init_config();
     if let Ok(mut guard) = CONFIG_WATCHER.lock() {

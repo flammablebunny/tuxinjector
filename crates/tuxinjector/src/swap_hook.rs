@@ -1,4 +1,5 @@
-// EGL/GLX SwapBuffers hooks -- render overlay then forward to the real swap fn
+// SwapBuffers hooks -- render our overlay then forward to the real swap fn.
+// Linux uses EGL/GLX, macOS uses CGL (or glfwSwapBuffers directly).
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
@@ -10,26 +11,58 @@ use crate::state;
 
 extern crate libc;
 
+// -- Linux EGL/GLX --
+#[cfg(target_os = "linux")]
 type EglSwapBuffersFn = unsafe extern "C" fn(display: *mut c_void, surface: *mut c_void) -> i32;
+#[cfg(target_os = "linux")]
 type GlxSwapBuffersFn = unsafe extern "C" fn(display: *mut c_void, drawable: u64);
-
-// RTLD_NEXT pointers (potentially another hook in the chain)
+#[cfg(target_os = "linux")]
 static REAL_EGL_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
 static REAL_GLX_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-// driver-direct pointers (skip the chain)
+#[cfg(target_os = "linux")]
 static ORIGINAL_EGL_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
 static ORIGINAL_GLX_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+// -- macOS CGL --
+#[cfg(target_os = "macos")]
+type CglFlushDrawableFn = unsafe extern "C" fn(ctx: *mut c_void) -> i32;
+#[cfg(target_os = "macos")]
+static REAL_CGL_FLUSH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// next frame deadline in CLOCK_MONOTONIC ns, 0 = not set yet
+// next frame deadline (monotonic ns). 0 = first frame, haven't set it yet
 static NEXT_FRAME_NS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_os = "linux")]
 fn clock_ns() -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+#[cfg(target_os = "macos")]
+fn clock_ns() -> u64 {
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct MachTimebaseInfo { numer: u32, denom: u32 }
+    extern "C" {
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+    }
+
+    static INFO: OnceLock<(u32, u32)> = OnceLock::new();
+    let (numer, denom) = *INFO.get_or_init(|| {
+        let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+        unsafe { mach_timebase_info(&mut info) };
+        (info.numer, info.denom)
+    });
+
+    let ticks = unsafe { mach_absolute_time() };
+    ticks * numer as u64 / denom as u64
 }
 
 // Sleep until close to the target, then spin-wait the rest to absorb
@@ -47,7 +80,6 @@ fn frame_limit(fps: i32, spin_us: i32) {
     let target = {
         let stored = NEXT_FRAME_NS.load(Ordering::Relaxed);
         if stored == 0 {
-            // first frame, just set next target and go
             NEXT_FRAME_NS.store(now + frame_ns, Ordering::Relaxed);
             return;
         }
@@ -59,18 +91,7 @@ fn frame_limit(fps: i32, spin_us: i32) {
 
         if remaining > spin_ns {
             let sleep_until = target - spin_ns;
-            let ts = libc::timespec {
-                tv_sec:  (sleep_until / 1_000_000_000) as libc::time_t,
-                tv_nsec: (sleep_until % 1_000_000_000) as libc::c_long,
-            };
-            unsafe {
-                libc::clock_nanosleep(
-                    libc::CLOCK_MONOTONIC,
-                    libc::TIMER_ABSTIME,
-                    &ts,
-                    std::ptr::null_mut(),
-                );
-            }
+            precise_sleep_until(sleep_until);
         }
 
         // spin the last few us to absorb jitter
@@ -82,11 +103,51 @@ fn frame_limit(fps: i32, spin_us: i32) {
     // advance target; resync if we've fallen behind by more than a frame
     let now2 = clock_ns();
     let next = if now2 > target + frame_ns {
-        now2 + frame_ns // fell behind, resync
+        now2 + frame_ns
     } else {
         target + frame_ns
     };
     NEXT_FRAME_NS.store(next, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "linux")]
+fn precise_sleep_until(target_ns: u64) {
+    let ts = libc::timespec {
+        tv_sec:  (target_ns / 1_000_000_000) as libc::time_t,
+        tv_nsec: (target_ns % 1_000_000_000) as libc::c_long,
+    };
+    unsafe {
+        libc::clock_nanosleep(
+            libc::CLOCK_MONOTONIC,
+            libc::TIMER_ABSTIME,
+            &ts,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn precise_sleep_until(target_ns: u64) {
+    // mach_wait_until wants mach absolute time, not ns --
+    // convert back using the inverse of the timebase ratio
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct MachTimebaseInfo { numer: u32, denom: u32 }
+    extern "C" {
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+        fn mach_wait_until(deadline: u64) -> i32;
+    }
+
+    static INFO: OnceLock<(u32, u32)> = OnceLock::new();
+    let (numer, denom) = *INFO.get_or_init(|| {
+        let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+        unsafe { mach_timebase_info(&mut info) };
+        (info.numer, info.denom)
+    });
+
+    let ticks = target_ns * denom as u64 / numer as u64;
+    unsafe { mach_wait_until(ticks); }
 }
 
 // when the GUI is open, don't let the framerate drop below this
@@ -146,7 +207,7 @@ fn first_frame_init() {
                 let ps = crate::perf_stats::PerfStats::new();
                 let _ = tx.perf_stats.set(ps);
 
-                // discover and load plugins from ~/.local/share/tuxinjector/plugins/
+                // discover and load plugins from the plugins dir
                 let saved = crate::plugin_loader::load_plugin_settings();
                 let loaded = crate::plugin_loader::discover_and_load(&saved);
                 let registry = crate::plugin_registry::PluginRegistry::new(loaded, saved);
@@ -176,7 +237,9 @@ fn first_frame_init() {
         tuxinjector_input::register_input_handler(Box::new(handler));
         tracing::info!("tuxinjector: input handler registered");
 
-        // patch Mesa GL calls in-place so LWJGL3 under RTLD_DEEPBIND hits our hooks
+        // patch Mesa GL calls in-place so LWJGL3+RTLD_DEEPBIND hits our hooks
+        // (macOS has neither RTLD_DEEPBIND nor Mesa)
+        #[cfg(target_os = "linux")]
         unsafe {
             crate::viewport_hook::install_glviewport_inline_hook();
             crate::viewport_hook::install_glbindframebuffer_inline_hook();
@@ -296,15 +359,16 @@ fn process_lua_commands() {
                     .unwrap_or("exec")
                     .to_string();
 
-                match std::process::Command::new("sh")
-                    .arg("-c")
+                let mut cmd = std::process::Command::new("sh");
+                cmd.arg("-c")
                     .arg(&cmd_str)
-                    .env("GDK_BACKEND", "x11")
-                    .env("_JAVA_AWT_WM_NONREPARENTING", "1")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
+                    .stderr(std::process::Stdio::null());
+                #[cfg(target_os = "linux")]
+                cmd.env("GDK_BACKEND", "x11")
+                    .env("_JAVA_AWT_WM_NONREPARENTING", "1");
+                match cmd.spawn()
                 {
                     Ok(child) => {
                         let pid = child.id();
@@ -395,16 +459,14 @@ type GlGetFbAttachParamFn = unsafe extern "C" fn(u32, u32, u32, *mut i32);
 type GlGetTexLevelParamFn = unsafe extern "C" fn(u32, i32, u32, *mut i32);
 type GlIsFramebufferFn = unsafe extern "C" fn(u32) -> u8;
 
-static GLFB_ATTACH: std::sync::OnceLock<GlGetFbAttachParamFn> = std::sync::OnceLock::new();
-static GLTEX_LEVEL: std::sync::OnceLock<GlGetTexLevelParamFn> = std::sync::OnceLock::new();
-static GL_IS_FB: std::sync::OnceLock<GlIsFramebufferFn> = std::sync::OnceLock::new();
+static GLFB_ATTACH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static GLTEX_LEVEL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static GL_IS_FB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-unsafe fn resolve_once<F: Copy>(lock: &std::sync::OnceLock<F>, name: &[u8]) -> Option<F> {
-    Some(*lock.get_or_init(|| {
-        let p = crate::dlsym_hook::resolve_real_symbol(name);
-        if p.is_null() { return std::mem::zeroed(); }
-        std::mem::transmute_copy(&p)
-    }))
+unsafe fn resolve_once<F: Copy>(lock: &std::sync::OnceLock<usize>, name: &[u8]) -> Option<F> {
+    let p = *lock.get_or_init(|| crate::dlsym_hook::resolve_real_symbol(name) as usize);
+    if p == 0 { return None; }
+    Some(std::mem::transmute_copy(&p))
 }
 
 /// Find an FBO whose color attachment matches `mode_w x mode_h`.
@@ -422,21 +484,15 @@ pub unsafe fn find_game_fbo_and_texture(
     mode_w: u32,
     mode_h: u32,
 ) -> (u32, u32) {
-    let get_fb_attach: GlGetFbAttachParamFn =
-        match resolve_once(&GLFB_ATTACH, b"glGetFramebufferAttachmentParameteriv\0") {
-            Some(f) if (f as *const () as usize) != 0 => f,
-            _ => return (0, 0),
-        };
-    let get_tex_level: GlGetTexLevelParamFn =
-        match resolve_once(&GLTEX_LEVEL, b"glGetTexLevelParameteriv\0") {
-            Some(f) if (f as *const () as usize) != 0 => f,
-            _ => return (0, 0),
-        };
-    let is_fb: GlIsFramebufferFn =
-        match resolve_once(&GL_IS_FB, b"glIsFramebuffer\0") {
-            Some(f) if (f as *const () as usize) != 0 => f,
-            _ => return (0, 0),
-        };
+    let Some(get_fb_attach) = resolve_once::<GlGetFbAttachParamFn>(&GLFB_ATTACH, b"glGetFramebufferAttachmentParameteriv\0") else {
+        return (0, 0);
+    };
+    let Some(get_tex_level) = resolve_once::<GlGetTexLevelParamFn>(&GLTEX_LEVEL, b"glGetTexLevelParameteriv\0") else {
+        return (0, 0);
+    };
+    let Some(is_fb) = resolve_once::<GlIsFramebufferFn>(&GL_IS_FB, b"glIsFramebuffer\0") else {
+        return (0, 0);
+    };
 
     let mut prev_fbo = 0i32;
     (gl.get_integer_v)(GL_FRAMEBUFFER_BINDING, &mut prev_fbo);
@@ -637,6 +693,55 @@ unsafe fn center_game_content(
     tracing::debug!(src_x, src_y, dst_x, dst_y, bw, bh, "center_game_content: done");
 }
 
+// macOS: black out border areas around the centered viewport (can't resize
+// the window in fullscreen so stale pixels linger otherwise)
+#[cfg(target_os = "macos")]
+unsafe fn clear_mode_borders(
+    gl: &crate::gl_resolve::GlFunctions,
+    mode_w: u32,
+    mode_h: u32,
+    orig_w: u32,
+    orig_h: u32,
+) {
+    let cx = (orig_w as i32 - mode_w as i32) / 2;
+    let cy = (orig_h as i32 - mode_h as i32) / 2;
+    let ow = orig_w as i32;
+    let oh = orig_h as i32;
+    let mw = mode_w as i32;
+    let mh = mode_h as i32;
+
+    // mode fills the window, nothing to do
+    if cx <= 0 && cy <= 0 { return; }
+
+    (gl.bind_framebuffer)(GL_FRAMEBUFFER, 0);
+    (gl.viewport)(0, 0, ow, oh);
+    (gl.clear_color)(0.0, 0.0, 0.0, 1.0);
+    (gl.enable)(GL_SCISSOR_TEST);
+    (gl.color_mask)(1, 1, 1, 1);
+
+    // left border
+    if cx > 0 {
+        (gl.scissor)(0, 0, cx, oh);
+        (gl.clear)(GL_COLOR_BUFFER_BIT);
+    }
+    // right border
+    if cx > 0 {
+        (gl.scissor)(cx + mw, 0, ow - cx - mw, oh);
+        (gl.clear)(GL_COLOR_BUFFER_BIT);
+    }
+    // bottom border (between left/right)
+    if cy > 0 {
+        (gl.scissor)(cx, 0, mw, cy);
+        (gl.clear)(GL_COLOR_BUFFER_BIT);
+    }
+    // top border (between left/right)
+    if cy > 0 {
+        (gl.scissor)(cx, cy + mh, mw, oh - cy - mh);
+        (gl.clear)(GL_COLOR_BUFFER_BIT);
+    }
+
+    (gl.disable)(GL_SCISSOR_TEST);
+}
 
 // main per-frame render path
 unsafe fn render_overlay() {
@@ -664,6 +769,9 @@ unsafe fn render_overlay() {
             let t_lock = std::time::Instant::now();
 
             if let Some(gl) = tx.gl.get() {
+                // bypass virtual FBO so bind_framebuffer(0) hits the real backbuffer
+                let _fb_guard = crate::virtual_fb::fb_bypass_guard();
+
                 let (mw, mh) = crate::viewport_hook::get_mode_size();
                 let _oversized = mw > 0 && mh > 0
                     && crate::viewport_hook::is_oversized(mw, mh, w, h);
@@ -674,6 +782,13 @@ unsafe fn render_overlay() {
                     // undersized only needs centering when viewport hook isn't active
                     if oversized || !crate::viewport_hook::is_gl_viewport_hooked() {
                         center_game_content(gl, mw, mh, w, h);
+                    }
+
+                    // macOS fullscreen: viewport hook centered the game but we
+                    // can't resize the window, so black out the border areas
+                    #[cfg(target_os = "macos")]
+                    if !oversized && crate::viewport_hook::is_gl_viewport_hooked() {
+                        clear_mode_borders(gl, mw, mh, w, h);
                     }
                 }
 
@@ -715,18 +830,21 @@ unsafe fn render_overlay() {
 
 // --- setters (called from dlsym_hook) ---
 
+// -- Linux: stash real EGL/GLX swap ptrs and try to resolve the originals --
+
+#[cfg(target_os = "linux")]
 pub fn store_real_egl_swap(ptr: *mut c_void) {
     REAL_EGL_SWAP.store(ptr, Ordering::Release);
     resolve_original_egl_swap();
 }
 
+#[cfg(target_os = "linux")]
 pub fn store_real_glx_swap(ptr: *mut c_void) {
     REAL_GLX_SWAP.store(ptr, Ordering::Release);
     resolve_original_glx_swap();
 }
 
-// try to grab eglSwapBuffers directly from the EGL library,
-// bypassing any other hooks in the LD_PRELOAD chain
+#[cfg(target_os = "linux")]
 fn resolve_original_egl_swap() {
     const LIBS: &[&[u8]] = &[b"libEGL.so.1\0", b"libEGL.so\0"];
 
@@ -748,6 +866,7 @@ fn resolve_original_egl_swap() {
     tracing::debug!("couldn't resolve original eglSwapBuffers from lib, using RTLD_NEXT pointer");
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_original_glx_swap() {
     const LIBS: &[&[u8]] = &[
         b"libGLX.so.0\0",
@@ -774,8 +893,17 @@ fn resolve_original_glx_swap() {
     tracing::debug!("couldn't resolve original glXSwapBuffers from lib, using RTLD_NEXT pointer");
 }
 
-// pick which swap fn to call: the driver-direct one (skip hook chain)
-// or the RTLD_NEXT one (go through chain)
+// -- macOS: stash the real CGL ptr --
+
+#[cfg(target_os = "macos")]
+pub fn store_real_cgl_flush(ptr: *mut c_void) {
+    REAL_CGL_FLUSH.store(ptr, Ordering::Release);
+    tracing::info!("stored real CGLFlushDrawable");
+}
+
+// pick driver-direct ptr (skips other hooks) or RTLD_NEXT (goes through
+// the chain). macOS doesn't have LD_PRELOAD chaining so this is Linux only.
+#[cfg(target_os = "linux")]
 fn select_swap_ptr(
     rtld_next: &AtomicPtr<c_void>,
     original: &AtomicPtr<c_void>,
@@ -786,7 +914,7 @@ fn select_swap_ptr(
             || cfg.advanced.hook_chaining_next_target
                 == tuxinjector_config::types::HookChainingNextTarget::OriginalFunction
     } else {
-        true // before config loads, default to skipping other hooks
+        true
     };
 
     if skip_chain {
@@ -799,6 +927,7 @@ fn select_swap_ptr(
 
 // --- hooked swap fns ---
 
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn hooked_egl_swap_buffers(
     display: *mut c_void,
@@ -832,6 +961,7 @@ pub unsafe extern "C" fn hooked_egl_swap_buffers(
     real(display, surface)
 }
 
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn hooked_glx_swap_buffers(display: *mut c_void, drawable: u64) {
     first_frame_init();
@@ -860,4 +990,100 @@ pub unsafe extern "C" fn hooked_glx_swap_buffers(display: *mut c_void, drawable:
 
     let real: GlxSwapBuffersFn = std::mem::transmute(ptr);
     real(display, drawable);
+}
+
+// -- glfwSwapBuffers hook (macOS) --
+// dlsym interpose stashes the real ptr; PLT export is a fallback
+
+#[cfg(target_os = "macos")]
+static REAL_GLFW_SWAP_BUFFERS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_os = "macos")]
+type GlfwSwapBuffersFn = unsafe extern "C" fn(window: *mut c_void);
+
+#[cfg(target_os = "macos")]
+pub fn store_real_glfw_swap(ptr: *mut c_void) {
+    REAL_GLFW_SWAP_BUFFERS.store(ptr, Ordering::Release);
+    tracing::info!("stored real glfwSwapBuffers");
+}
+
+// primary hook -- what LWJGL actually calls after our dlsym interpose
+#[cfg(target_os = "macos")]
+pub unsafe extern "C" fn hooked_glfw_swap_buffers(window: *mut c_void) {
+    first_frame_init();
+
+    let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    if frame % LOG_INTERVAL == 0 {
+        tracing::debug!(frame, "glfwSwapBuffers");
+    }
+
+    if INITIALIZED.load(Ordering::Acquire) {
+        let cfg = state::get().config.load();
+        let fps = effective_fps(cfg.display.fps_limit);
+        frame_limit(fps, cfg.display.fps_limit_sleep_threshold);
+        if let Some(ps) = state::get().perf_stats.get() {
+            ps.record_frame();
+        }
+    }
+
+    render_overlay();
+
+    let ptr = REAL_GLFW_SWAP_BUFFERS.load(Ordering::Acquire);
+    if ptr.is_null() {
+        tracing::error!("hooked_glfw_swap_buffers: real pointer is null!");
+        return;
+    }
+    let real: GlfwSwapBuffersFn = std::mem::transmute(ptr);
+    real(window)
+}
+
+// PLT fallback -- if something calls us through flat namespace directly
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub unsafe extern "C" fn glfwSwapBuffers(window: *mut c_void) {
+    // prefer the stored ptr (from dlsym interpose), fall back to RTLD_NEXT
+    let mut ptr = REAL_GLFW_SWAP_BUFFERS.load(Ordering::Acquire);
+    if ptr.is_null() {
+        ptr = libc::dlsym(
+            libc::RTLD_NEXT,
+            b"glfwSwapBuffers\0".as_ptr() as *const i8,
+        );
+        if !ptr.is_null() {
+            REAL_GLFW_SWAP_BUFFERS.store(ptr, Ordering::Release);
+        }
+    }
+    hooked_glfw_swap_buffers(window)
+}
+
+// -- macOS CGL fallback (only if CGLFlushDrawable gets resolved via dlsym) --
+
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub unsafe extern "C" fn hooked_cgl_flush(ctx: *mut c_void) -> i32 {
+    first_frame_init();
+
+    let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    if frame % LOG_INTERVAL == 0 {
+        tracing::debug!(frame, "CGLFlushDrawable");
+    }
+
+    if INITIALIZED.load(Ordering::Acquire) {
+        let cfg = state::get().config.load();
+        let fps = effective_fps(cfg.display.fps_limit);
+        frame_limit(fps, cfg.display.fps_limit_sleep_threshold);
+        if let Some(ps) = state::get().perf_stats.get() {
+            ps.record_frame();
+        }
+    }
+
+    render_overlay();
+
+    let ptr = REAL_CGL_FLUSH.load(Ordering::Acquire);
+    if ptr.is_null() {
+        tracing::error!("hooked_cgl_flush: real pointer is null!");
+        return -1;
+    }
+
+    let real: CglFlushDrawableFn = std::mem::transmute(ptr);
+    real(ctx)
 }
