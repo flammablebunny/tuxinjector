@@ -1701,7 +1701,6 @@ dependencies = [
  "arc-swap",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -1758,7 +1757,6 @@ name = "tuxinjector-render"
 version = "1.0.0"
 dependencies = [
  "image",
- "tracing",
 ]
 
 [[package]]

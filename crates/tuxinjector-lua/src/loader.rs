@@ -65,16 +65,6 @@ pub fn load_lua_config_full(src: &str) -> Result<LuaLoadResult, LuaConfigError> 
     })
 }
 
-pub fn load_lua_config_file(path: &std::path::Path) -> Result<Config, LuaConfigError> {
-    let src = std::fs::read_to_string(path).map_err(|e| {
-        LuaConfigError::Lua(mlua::Error::external(format!(
-            "failed to read {}: {e}",
-            path.display()
-        )))
-    })?;
-    load_lua_config(&src)
-}
-
 // Sandbox: nuke dangerous globals, redirect print() to tracing so
 // user scripts can't escape but still get debug output
 pub(crate) fn create_sandbox() -> Result<Lua, mlua::Error> {

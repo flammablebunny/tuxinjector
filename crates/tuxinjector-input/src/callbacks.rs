@@ -239,10 +239,6 @@ static GUI_FORCED_CURSOR: AtomicBool = AtomicBool::new(false);
 
 static GLFW_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
-pub fn store_glfw_window(window: *mut c_void) {
-    GLFW_WINDOW.store(window, Ordering::Release);
-}
-
 pub fn is_cursor_captured() -> bool {
     CURSOR_CAPTURED.load(Ordering::Relaxed)
 }

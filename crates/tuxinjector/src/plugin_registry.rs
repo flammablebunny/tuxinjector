@@ -96,8 +96,6 @@ impl PluginRegistry {
                     width: sub.width,
                     height: sub.height,
                     pixels,
-                    depth: sub.depth,
-                    opacity: sub.opacity,
                 });
             }
         }
@@ -121,18 +119,6 @@ impl PluginRegistry {
             to: to_c.as_ptr(),
         };
         self.broadcast_event(&ev);
-    }
-
-    #[allow(dead_code)]
-    pub fn broadcast_game_state_changed(&mut self, state: &str) {
-        let s = CString::new(state).unwrap_or_default();
-        let ev = PluginEvent::GameStateChanged { state: s.as_ptr() };
-        self.broadcast_event(&ev);
-    }
-
-    #[allow(dead_code)]
-    pub fn broadcast_config_reloaded(&mut self) {
-        self.broadcast_event(&PluginEvent::ConfigReloaded);
     }
 
     pub fn summaries(&self) -> Vec<PluginSummary> {
@@ -162,26 +148,12 @@ impl PluginRegistry {
         entry.enabled = on;
         plugin_loader::save_plugin_settings(&self.saved);
     }
-
-    #[allow(dead_code)]
-    pub fn count(&self) -> usize {
-        self.plugins.len()
-    }
-
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.plugins.is_empty()
-    }
 }
 
-#[allow(dead_code)]
 pub struct CollectedSubmission {
     pub x: f32,
     pub y: f32,
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
-    pub depth: i32,
-    pub opacity: f32,
 }

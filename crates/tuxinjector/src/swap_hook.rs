@@ -773,8 +773,6 @@ unsafe fn render_overlay() {
                 let _fb_guard = crate::virtual_fb::fb_bypass_guard();
 
                 let (mw, mh) = crate::viewport_hook::get_mode_size();
-                let _oversized = mw > 0 && mh > 0
-                    && crate::viewport_hook::is_oversized(mw, mh, w, h);
 
                 if mw > 0 && mh > 0 && (mw != w || mh != h) {
                     let oversized = crate::viewport_hook::is_oversized(mw, mh, w, h);

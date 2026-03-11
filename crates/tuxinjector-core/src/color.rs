@@ -28,41 +28,6 @@ impl Color {
         }
     }
 
-    // Parses #RGB, #RGBA, #RRGGBB, #RRGGBBAA (hash optional)
-    pub fn from_hex(hex: &str) -> Option<Self> {
-        let s = hex.strip_prefix('#').unwrap_or(hex);
-        match s.len() {
-            3 => {
-                let r = u8::from_str_radix(&s[0..1], 16).ok()?;
-                let g = u8::from_str_radix(&s[1..2], 16).ok()?;
-                let b = u8::from_str_radix(&s[2..3], 16).ok()?;
-                // 0xF -> 0xFF by multiplying by 17
-                Some(Self::from_rgba8(r * 17, g * 17, b * 17, 255))
-            }
-            4 => {
-                let r = u8::from_str_radix(&s[0..1], 16).ok()?;
-                let g = u8::from_str_radix(&s[1..2], 16).ok()?;
-                let b = u8::from_str_radix(&s[2..3], 16).ok()?;
-                let a = u8::from_str_radix(&s[3..4], 16).ok()?;
-                Some(Self::from_rgba8(r * 17, g * 17, b * 17, a * 17))
-            }
-            6 => {
-                let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-                Some(Self::from_rgba8(r, g, b, 255))
-            }
-            8 => {
-                let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-                let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-                Some(Self::from_rgba8(r, g, b, a))
-            }
-            _ => None,
-        }
-    }
-
     // Approximate sRGB -> linear via gamma 2.2. Not physically accurate
     // but good enough for blending operations in the overlay.
     pub fn to_linear(self) -> Self {
@@ -157,23 +122,6 @@ impl<'de> Visitor<'de> for ColorVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hex_parsing() {
-        let c = Color::from_hex("#ff8000").unwrap();
-        assert!((c.r - 1.0).abs() < 0.01);
-        assert!((c.g - 0.502).abs() < 0.01);
-        assert!((c.b - 0.0).abs() < 0.01);
-        assert!((c.a - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn hex_short() {
-        let c = Color::from_hex("f80").unwrap();
-        assert!((c.r - 1.0).abs() < 0.01);
-        assert!((c.g - 0.533).abs() < 0.01);
-        assert!((c.b - 0.0).abs() < 0.01);
-    }
 
     #[test]
     fn default_is_black() {

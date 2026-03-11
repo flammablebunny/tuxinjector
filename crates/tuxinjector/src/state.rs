@@ -3,7 +3,6 @@
 // times during startup (config first, GL on first frame, etc).
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -23,8 +22,6 @@ pub struct TuxinjectorState {
     pub config: Arc<ConfigSnapshot>,
     pub gl: OnceLock<GlFunctions>,
     pub overlay: OnceLock<std::sync::Mutex<OverlayState>>,
-    #[allow(dead_code)]
-    pub frame_count: AtomicU64,
 
     pub lua_bindings: std::sync::Mutex<Option<LuaBindings>>,
     pub lua_runtime: OnceLock<tuxinjector_lua::LuaRuntime>,
@@ -40,7 +37,6 @@ impl TuxinjectorState {
             config: Arc::new(ConfigSnapshot::default()),
             gl: OnceLock::new(),
             overlay: OnceLock::new(),
-            frame_count: AtomicU64::new(0),
             lua_bindings: std::sync::Mutex::new(None),
             lua_runtime: OnceLock::new(),
             game_state: std::sync::Mutex::new(String::new()),

@@ -1,6 +1,6 @@
 // Plugin discovery and loading.
-// Scans ~/.local/share/tuxinjector/plugins/ for .so files that export
-// a `tx_plugin_register` C ABI entry point.
+// Scans the plugins dir for .so/.dylib files that export a `tx_plugin_register` C ABI entry point.
+// Linux: ~/.local/share/tuxinjector/plugins/  macOS: ~/.config/tuxinjector/plugins/
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr};
@@ -118,6 +118,9 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn plugin_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base = home_dir().map(|h| h.join(".config"))?;
+    #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".local").join("share")))?;
@@ -193,7 +196,8 @@ pub fn discover_and_load(saved: &HashMap<String, PluginSettings>) -> Vec<LoadedP
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("so") {
+        let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
             continue;
         }
 

@@ -1143,14 +1143,6 @@ impl OverlayState {
         tracing::info!(visible = self.windows_visible, "toggled window overlays");
     }
 
-    #[allow(dead_code)]
-    pub fn gui_visible(&self) -> bool { self.gui.is_visible() }
-
-    #[allow(dead_code)]
-    pub fn gui_wants_pointer(&self) -> bool { self.gui.wants_pointer_input() }
-
-    #[allow(dead_code)]
-    pub fn gui_wants_keyboard(&self) -> bool { self.gui.wants_keyboard_input() }
 }
 
 impl Drop for OverlayState {

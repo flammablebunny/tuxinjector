@@ -2,8 +2,6 @@
 // Key combos get mapped to callback IDs here, and commands flow
 // back to the render thread through crossbeam channels.
 
-use crossbeam_channel::{Receiver, Sender};
-
 // Commands produced by Lua callbacks, drained per-frame on the render thread
 #[derive(Debug, Clone)]
 pub enum TuxinjectorCommand {
@@ -23,28 +21,6 @@ pub struct LuaActionBinding {
     pub key_combo: Vec<i32>,     // GLFW keycodes -- all must be held simultaneously
     pub callback_id: u64,
     pub block_from_game: bool,   // swallow the key event so the game never sees it
-}
-
-// Channel pair between input thread and Lua VM thread.
-// Callbacks go in, commands come out.
-pub struct ActionDispatcher {
-    pub request_tx: Sender<u64>,
-    pub request_rx: Receiver<u64>,
-    pub command_tx: Sender<TuxinjectorCommand>,
-    pub command_rx: Receiver<TuxinjectorCommand>,
-}
-
-impl ActionDispatcher {
-    pub fn new() -> Self {
-        let (req_tx, req_rx) = crossbeam_channel::bounded(64);
-        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
-        Self {
-            request_tx: req_tx,
-            request_rx: req_rx,
-            command_tx: cmd_tx,
-            command_rx: cmd_rx,
-        }
-    }
 }
 
 // Collects tx.bind() calls while we're evaluating the config.
@@ -76,7 +52,4 @@ impl ActionBuilder {
         &self.bindings
     }
 
-    pub fn into_bindings(self) -> Vec<LuaActionBinding> {
-        self.bindings
-    }
 }

@@ -7,8 +7,8 @@ pub mod key_parse;
 pub mod loader;
 pub mod runtime;
 
-pub use actions::{ActionBuilder, ActionDispatcher, LuaActionBinding, TuxinjectorCommand};
-pub use loader::{load_lua_config, load_lua_config_file, load_lua_config_full, LuaConfigError, LuaLoadResult};
+pub use actions::{ActionBuilder, LuaActionBinding, TuxinjectorCommand};
+pub use loader::{load_lua_config, load_lua_config_full, LuaConfigError, LuaLoadResult};
 pub use key_parse::parse_key_combo;
 pub use runtime::{LuaConfigUpdate, LuaRuntime};
 

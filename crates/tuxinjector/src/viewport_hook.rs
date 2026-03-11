@@ -880,11 +880,6 @@ unsafe fn try_glfw_window_resize(_mode_w: u32, _mode_h: u32, _orig_w: u32, _orig
     // no-op on purpose
 }
 
-#[allow(dead_code)]
-pub fn is_glx_path() -> bool {
-    GAME_EGL_WINDOW.load(Ordering::Acquire).is_null()
-}
-
 pub fn is_gl_viewport_hooked() -> bool {
     GL_VIEWPORT_SEEN.load(Ordering::Relaxed)
 }
@@ -1001,10 +996,6 @@ static REAL_GL_DRAW_BUFFER: OnceLock<GlDrawBufferFn> = OnceLock::new();
 static REAL_GL_READ_BUFFER: OnceLock<GlReadBufferFn> = OnceLock::new();
 static REAL_GL_DRAW_BUFFERS: OnceLock<GlDrawBuffersFn> = OnceLock::new();
 static REAL_GL_BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
-#[allow(dead_code)]
-static REAL_GL_BLIT_FRAMEBUFFER_EXT: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
-#[allow(dead_code)]
-static REAL_GL_BLIT_FRAMEBUFFER_ARB: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
 
 // rwx copy of Mesa's glViewport, created before we inline-patch it
 static REAL_GL_VIEWPORT_COPY: OnceLock<GlViewportFn> = OnceLock::new();
@@ -1807,15 +1798,6 @@ pub fn is_oversized(mode_w: u32, mode_h: u32, orig_w: u32, orig_h: u32) -> bool 
 
 pub fn get_original_size() -> (u32, u32) {
     unpack(ORIGINAL_DIMS.load(Ordering::Acquire))
-}
-
-#[allow(dead_code)]
-pub fn store_original_size_if_unset(w: u32, h: u32) {
-    let (ow, _) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
-    if ow == 0 {
-        ORIGINAL_DIMS.store(pack(w, h), Ordering::Release);
-        tracing::info!(w, h, "original surface size captured from GL viewport (fallback)");
-    }
 }
 
 pub fn force_store_original_size(w: u32, h: u32) {

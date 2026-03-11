@@ -133,16 +133,6 @@ impl MirrorCaptureState {
         }
     }
 
-    #[allow(dead_code)]
-    pub unsafe fn capture(
-        &mut self,
-        gl: &GlFunctions,
-        src_x: i32, src_y: i32,
-        src_w: i32, src_h: i32,
-    ) {
-        self.capture_from(gl, src_x, src_y, src_w, src_h, None, false, false);
-    }
-
     // Caller must save/restore FBO bindings
     pub unsafe fn capture_from(
         &mut self,
@@ -248,40 +238,6 @@ impl MirrorCaptureState {
         }
     }
 
-    // Periodic readback for filtered mirrors that need CPU-side visibility checks
-    #[allow(dead_code)]
-    pub unsafe fn do_readback(&mut self, gl: &GlFunctions) {
-        let dw = self.tgt.w as i32;
-        let dh = self.tgt.h as i32;
-
-        let wr_pbo = self.tgt.pbo[self.tgt.pbo_idx];
-        let rd_pbo = self.tgt.pbo[1 - self.tgt.pbo_idx];
-
-        (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, self.tgt.fbo);
-        (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, wr_pbo);
-        (gl.read_pixels)(0, 0, dw, dh, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null_mut());
-
-        if self.tgt.frame_cnt > 0 {
-            (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, rd_pbo);
-            let mapped = (gl.map_buffer)(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-            if !mapped.is_null() {
-                let n = (dw as usize) * (dh as usize) * 4;
-                std::ptr::copy_nonoverlapping(
-                    mapped as *const u8, self.pixels.as_mut_ptr(), n,
-                );
-                (gl.unmap_buffer)(GL_PIXEL_PACK_BUFFER);
-
-                flip_rows_inplace(&mut self.pixels, dw as usize, dh as usize);
-                self.dirty = true;
-            }
-        }
-
-        (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, 0);
-
-        self.tgt.pbo_idx = 1 - self.tgt.pbo_idx;
-        self.tgt.frame_cnt = self.tgt.frame_cnt.saturating_add(1);
-    }
-
     // Multi-input capture with sync readback (for tiny mirrors where the stall is negligible).
     // Caller must save/restore FBO bindings.
     pub unsafe fn capture_multi_from(
@@ -360,25 +316,6 @@ impl MirrorCaptureState {
         }
     }
 
-    // Take pixel data if dirty (swaps in an empty buffer to avoid a copy)
-    #[allow(dead_code)]
-    pub fn take_pixels(&mut self) -> Option<(u32, u32, Vec<u8>)> {
-        if self.dirty {
-            self.dirty = false;
-            let sz = (self.tgt.w as usize) * (self.tgt.h as usize) * 4;
-            let mut out = vec![0u8; sz];
-            std::mem::swap(&mut self.pixels, &mut out);
-            Some((self.tgt.w, self.tgt.h, out))
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn dimensions(&self) -> (u32, u32) {
-        (self.tgt.w, self.tgt.h)
-    }
-
     pub unsafe fn resize(&mut self, gl: &GlFunctions, w: u32, h: u32) {
         if self.tgt.w == w && self.tgt.h == h {
             return;
@@ -447,31 +384,9 @@ impl MirrorCaptureManager {
         self.captures.iter_mut().find(|c| c.name == name)
     }
 
-    #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item = &MirrorCaptureState> {
-        self.captures.iter()
-    }
-
-
-    #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut MirrorCaptureState> {
-        self.captures.iter_mut()
-    }
-
     pub unsafe fn destroy(&self, gl: &GlFunctions) {
         for c in &self.captures {
             c.destroy(gl);
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.captures.len()
-    }
-
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.captures.is_empty()
     }
 }

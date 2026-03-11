@@ -38,8 +38,6 @@ pub struct GuiRenderer {
     app: SettingsApp,
     config: Arc<ConfigSnapshot>,
     gpa: EglGetProcAddressFn,
-    #[allow(dead_code)]
-    start_time: Instant,
     last_render: Instant,
     visible: bool,
     mouse_held: bool,
@@ -92,7 +90,6 @@ impl GuiRenderer {
             app,
             config,
             gpa,
-            start_time: now,
             last_render: now,
             visible: false,
             mouse_held: false,
@@ -111,25 +108,6 @@ impl GuiRenderer {
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
         self.app.toggle();
-    }
-
-    #[allow(dead_code)]
-    pub fn set_visible(&mut self, vis: bool) {
-        if self.visible != vis {
-            self.visible = vis;
-            if vis != self.app.is_visible() {
-                self.app.toggle();
-            }
-        }
-    }
-
-    pub fn wants_pointer_input(&self) -> bool {
-        self.visible && self.imgui.io().want_capture_mouse
-    }
-
-    #[allow(dead_code)]
-    pub fn wants_keyboard_input(&self) -> bool {
-        self.visible && self.imgui.io().want_capture_keyboard
     }
 
     pub fn render(
@@ -613,48 +591,6 @@ fn fps_color(fps: f32) -> [f32; 4] {
         [1.0, 0.78, 0.20, 1.0] // yellow
     } else {
         [1.0, 0.31, 0.31, 1.0] // red
-    }
-}
-
-// --- clipboard helpers ---
-// TODO: should probably use wayland clipboard too, not just xclip/xsel
-
-#[allow(dead_code)]
-fn read_clipboard() -> Option<String> {
-    let out = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-o"])
-        .output().ok()?;
-    if out.status.success() {
-        String::from_utf8(out.stdout).ok()
-    } else {
-        let out = std::process::Command::new("xsel")
-            .args(["--clipboard", "--output"])
-            .output().ok()?;
-        if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
-    }
-}
-
-#[allow(dead_code)]
-fn write_clipboard(text: &str) {
-    use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-i"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(ref mut stdin) = child.stdin {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
-    } else if let Ok(mut child) = std::process::Command::new("xsel")
-        .args(["--clipboard", "--input"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(ref mut stdin) = child.stdin {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
     }
 }
 

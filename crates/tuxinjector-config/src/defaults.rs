@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use tuxinjector_core::Color;
 
-pub fn color_black() -> Color { Color::BLACK }
 pub fn color_white() -> Color { Color::WHITE }
 
 pub fn background_selected_mode() -> String { "none".into() }
