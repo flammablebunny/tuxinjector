@@ -8,8 +8,11 @@ When installing Tux Injector, it is recommended to put the library at a permanen
 
 ```bash
 mkdir -p ~/.local/share/tuxinjector
-curl -fL https://github.com/flammablebunny/tuxinjector/releases/latest/download/tuxinjector.so -o ~/.local/share/tuxinjector/tuxinjector.so
+curl -fL https://github.com/flammablebunny/tuxinjector/releases/latest/download/tuxinjector_x64.so -o ~/.local/share/tuxinjector/tuxinjector_x64.so
 ```
+
+!!! tip
+    Not on x86_64? Replace `x64` in the curl command and filename with `aarch64`, `aarch32`, or `x86` depending on your system architecture.
 
 !!! note
     NixOS users should skip this and follow the [NixOS](#nixos) section below instead.
@@ -41,7 +44,7 @@ To inject Tuxinjector into Minecraft while using [Prism Launcher](https://prisml
 === "Linux"
 
     ```
-    env LD_PRELOAD=$HOME/.local/share/tuxinjector/tuxinjector.so
+    env LD_PRELOAD=$HOME/.local/share/tuxinjector/tuxinjector_x64.so
     ```
 
 === "macOS"

@@ -12,11 +12,11 @@ Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline o
 
 ## How It Works
 
-Tuxinjector compiles to a shared library (`tuxinjector.so` on Linux, `tuxinjector.dylib` on macOS) that gets loaded before the game starts. When the JVM calls `dlsym` to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
+Tuxinjector compiles to a per-architecture shared library on Linux (e.g. `tuxinjector_x64.so`, `tuxinjector_aarch64.so`) or a universal binary on macOS (`tuxinjector.dylib`) that gets loaded before the game starts. When the JVM calls `dlsym` to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
 
 ```
 Game launch:
-  LD_PRELOAD=tuxinjector.so minecraft           # Linux
+  LD_PRELOAD=tuxinjector_x64.so minecraft        # Linux
   DYLD_INSERT_LIBRARIES=tuxinjector.dylib minecraft  # macOS
 
 1. Game's JVM loads -> dlsym("eglSwapBuffers") -> tuxinjector's hooked dlsym

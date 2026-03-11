@@ -10,11 +10,11 @@ Tux Injector is an overlay written in Rust that injects into Minecraft's renderi
 
 ## How It Works
 
-Tuxinjector compiles to a shared library (`tuxinjector.so` on Linux, `tuxinjector.dylib` on macOS) that gets loaded before the game starts. When the JVM calls `dlsym` to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
+Tuxinjector compiles to a per-architecture shared library on Linux (e.g. `tuxinjector_x64.so`, `tuxinjector_aarch64.so`) or a universal binary on macOS (`tuxinjector.dylib`) that gets loaded before the game starts. When the JVM calls `dlsym` to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
 
 ```
 Game launch:
-  LD_PRELOAD=tuxinjector.so minecraft           # Linux
+  LD_PRELOAD=tuxinjector_x64.so minecraft        # Linux
   DYLD_INSERT_LIBRARIES=tuxinjector.dylib minecraft  # macOS
 
 1. Game's JVM loads -> dlsym("eglSwapBuffers") -> tuxinjector's hooked dlsym
@@ -39,7 +39,7 @@ For a deeper look at the injection, rendering, and input systems, check the [arc
 Set a **Wrapper Command** in your instance settings under **Custom Commands**:
 
 ```
-env LD_PRELOAD=/path/to/tuxinjector.so
+env LD_PRELOAD=/path/to/tuxinjector_x64.so
 ```
 
 You can also set `LD_PRELOAD` under the Environment Variables tab instead.
@@ -123,8 +123,8 @@ nix develop
 ./build.sh
 ```
 
-On Linux this produces `target/release/tuxinjector.so`.
-On macOS this produces `target/release/tuxinjector.dylib` (Nix store rpaths are rewritten to system paths automatically).
+On Linux this produces an architecture-suffixed binary (e.g. `target/release/tuxinjector_x64.so`, `tuxinjector_aarch64.so`, `tuxinjector_aarch32.so`, or `tuxinjector_x86.so`).
+On macOS this produces `target/release/tuxinjector.dylib` as a universal binary (Nix store rpaths are rewritten to system paths automatically).
 
 ### Tests
 
