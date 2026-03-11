@@ -16,10 +16,19 @@ cargo build "${CARGO_FLAGS[@]}"
 
 TARGET_DIR="target/$PROFILE"
 OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+case "$ARCH" in
+    x86_64)  ARCH_SUFFIX="x64" ;;
+    i686|i386) ARCH_SUFFIX="x86" ;;
+    aarch64) ARCH_SUFFIX="aarch64" ;;
+    armv7l|armhf) ARCH_SUFFIX="aarch32" ;;
+    *) echo "error: unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 
 if [ "$OS" = "Darwin" ]; then
     SRC="$TARGET_DIR/libtuxinjector.dylib"
-    DST="$TARGET_DIR/tuxinjector.dylib"
+    DST="$TARGET_DIR/tuxinjector_${ARCH_SUFFIX}.dylib"
 
     if [ ! -f "$SRC" ]; then
         echo "error: $SRC not found" >&2
@@ -46,7 +55,7 @@ if [ "$OS" = "Darwin" ]; then
 elif [ "$OS" = "Linux" ]; then
     # cargo produces libtuxinjector.so on Linux
     SRC="$TARGET_DIR/libtuxinjector.so"
-    DST="$TARGET_DIR/tuxinjector.so"
+    DST="$TARGET_DIR/tuxinjector_${ARCH_SUFFIX}.so"
 
     if [ ! -f "$SRC" ]; then
         echo "error: $SRC not found" >&2

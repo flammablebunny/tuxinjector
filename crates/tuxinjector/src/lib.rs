@@ -112,8 +112,55 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
     }
 }
 
+fn load_liblogger() {
+    #[cfg(target_arch = "x86_64")]
+    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_x64.so");
+    #[cfg(target_arch = "x86")]
+    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_x86.so");
+    #[cfg(target_arch = "aarch64")]
+    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_arm64.so");
+    #[cfg(target_arch = "arm")]
+    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_arm32.so");
+
+    #[cfg(target_arch = "x86_64")]
+    const LIBLOGGER_NAME: &str = "liblogger_x64.so";
+    #[cfg(target_arch = "x86")]
+    const LIBLOGGER_NAME: &str = "liblogger_x86.so";
+    #[cfg(target_arch = "aarch64")]
+    const LIBLOGGER_NAME: &str = "liblogger_arm64.so";
+    #[cfg(target_arch = "arm")]
+    const LIBLOGGER_NAME: &str = "liblogger_arm32.so";
+
+    let dir = std::path::PathBuf::from("/tmp/tuxinjector");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(LIBLOGGER_NAME);
+    if std::fs::write(&path, LIBLOGGER_BIN).is_err() {
+        return;
+    }
+
+    unsafe {
+        let cpath = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW);
+        if handle.is_null() {
+            let err = libc::dlerror();
+            if !err.is_null() {
+                eprintln!(
+                    "liblogger load failed: {}",
+                    std::ffi::CStr::from_ptr(err).to_string_lossy()
+                );
+            }
+        }
+    }
+
+    // delete from disk, Linux keeps it mapped in memory
+    let _ = std::fs::remove_file(&path);
+}
+
 #[ctor]
 fn init() {
+    // load liblogger before anything else
+    load_liblogger();
+
     // clear the preload env var so child processes don't get us injected too
     unsafe {
         #[cfg(target_os = "linux")]
