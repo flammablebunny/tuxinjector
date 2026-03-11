@@ -118,7 +118,11 @@ impl Default for AppsState {
 
 fn apps_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".config/tuxinjector/apps")
+    #[cfg(target_os = "macos")]
+    let base = ".config/tuxinjector/apps";
+    #[cfg(target_os = "linux")]
+    let base = ".local/share/tuxinjector/apps";
+    PathBuf::from(home).join(base)
 }
 
 fn app_jar_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.jar")) }
@@ -244,8 +248,9 @@ fn uninstall_app(id: &str) -> Result<(), String> {
 
 // Build LD_LIBRARY_PATH so Java AWT can find X11/GL libs.
 // Scrapes /proc/self/maps for /nix/store/*/lib paths (covers what the game loads),
-// reads TUXINJECTOR_X11_LIBS for the additional libs companion apps like nbb need 
+// reads TUXINJECTOR_X11_LIBS for the additional libs companion apps like nbb need
 // (set by the NixOS wrapper), and keeps the inherited LD_LIBRARY_PATH.
+#[cfg(target_os = "linux")]
 fn nix_ld_path() -> String {
     let mut dirs = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -283,8 +288,9 @@ fn nix_ld_path() -> String {
     dirs.join(":")
 }
 
-// Resolve the java binary: prefer the game's own JVM (via /proc/self/exe),
+// Resolve the java binary: prefer the game's own JVM (via /proc/self/exe on Linux),
 // fall back to "java" on PATH.
+#[cfg(target_os = "linux")]
 fn resolve_java() -> String {
     if let Ok(exe) = std::fs::read_link("/proc/self/exe") {
         let s = exe.to_string_lossy().to_string();
@@ -296,6 +302,21 @@ fn resolve_java() -> String {
     "java".to_string()
 }
 
+#[cfg(target_os = "macos")]
+fn resolve_java() -> String {
+    // We're injected into Minecraft which IS a Java process.
+    // Use the same JVM binary since "java" may not be on PATH.
+    if let Ok(exe) = std::env::current_exe() {
+        let s = exe.to_string_lossy().to_string();
+        if s.contains("java") || s.contains("jdk") || s.contains("jre") {
+            tracing::info!(java = %s, "using game's JVM for companion app");
+            return s;
+        }
+    }
+    "java".to_string()
+}
+
+#[cfg(target_os = "linux")]
 fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
     let ld = nix_ld_path();
     let java = resolve_java();
@@ -312,6 +333,24 @@ fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, St
         .env("_JAVA_AWT_WM_NONREPARENTING", "1")
         .env("TUXINJECTOR_STDIN_KEYS", "1")
         .env("LD_LIBRARY_PATH", &ld)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.spawn()
+        .map_err(|e| format!("java -jar: {e} -- is java installed?"))
+}
+
+#[cfg(target_os = "macos")]
+fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
+    let java = resolve_java();
+
+    let mut cmd = std::process::Command::new(&java);
+    cmd.arg("-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel")
+        .arg("-jar")
+        .arg(jar)
+        .args(extra_args)
+        .env_remove("DYLD_INSERT_LIBRARIES")
+        .env("TUXINJECTOR_STDIN_KEYS", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -546,6 +585,17 @@ fn launch_buttons(
             ui.same_line();
             if ui.button(format!("Launch with GUI##gui_{}", app.id)) {
                 do_launch(jar, app.name, &[], LaunchMode::Detached, &mut state.procs[idx]);
+            }
+        }
+    }
+}
+
+impl Drop for AppsState {
+    fn drop(&mut self) {
+        for child_opt in &mut self.procs {
+            if let Some(child) = child_opt {
+                super::super::running_apps::unregister(child.id());
+                let _ = child.kill();
             }
         }
     }
