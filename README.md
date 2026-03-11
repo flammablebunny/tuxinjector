@@ -90,7 +90,7 @@ The [Lua API reference](https://flammablebunny.github.io/tuxinjector/api/) cover
 
 ## Crate Structure
 
-Tuxinjector is set up as a Rust workspace split into 10 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
+Tuxinjector is set up as a Rust workspace split into 11 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
 
 | Crate | Purpose |
 |-------|---------|
@@ -104,6 +104,7 @@ Tuxinjector is set up as a Rust workspace split into 10 crates. Splitting things
 | `tuxinjector-lua` | Lua scripting runtime, hotkey actions, config loader |
 | `tuxinjector-capture` | Window overlay capture: PipeWire on Linux, CoreGraphics on macOS |
 | `tuxinjector-plugin-api` | C ABI plugin trait, `declare_plugin!` macro |
+| `imgui-glow-renderer` | Local fork of imgui-glow-renderer with GLSL 1.20 shader path for macOS GL 2.1 |
 
 ---
 
