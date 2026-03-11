@@ -324,6 +324,49 @@ impl GlCompositor {
 
 
 // Compile a single shader stage
+
+// macOS GL 2.1 only understands GLSL 1.20, our shaders are 300 ES.
+// Brute-force string replace to downgrade. Ugly but it works.
+#[cfg(target_os = "macos")]
+fn patch_glsl_for_macos(source: &str, shader_type: GLenum) -> String {
+    let is_frag = shader_type == GL_FRAGMENT_SHADER;
+    let mut s = source.to_string();
+
+    // downgrade version line + enable gpu_shader4 so gl_VertexID / textureSize work
+    s = s.replace(
+        "#version 300 es\nprecision highp float;",
+        "#version 120\n#extension GL_EXT_gpu_shader4 : enable",
+    );
+    // 1.20 doesn't have precision qualifiers
+    s = s.replace("precision highp float;\n", "");
+    s = s.replace("precision mediump float;\n", "");
+
+    // no layout(location=N) in 1.20, use plain attribute
+    s = s.replace("layout(location = 0) in ", "attribute ");
+    s = s.replace("layout(location = 1) in ", "attribute ");
+    s = s.replace("layout(location = 2) in ", "attribute ");
+
+    if is_frag {
+        // prefix with \n so we don't accidentally clobber function params
+        s = s.replace("\nin vec2 ", "\nvarying vec2 ");
+        s = s.replace("\nin vec3 ", "\nvarying vec3 ");
+        s = s.replace("\nin vec4 ", "\nvarying vec4 ");
+        // 1.20 writes to gl_FragColor, not a custom out variable
+        s = s.replace("out vec4 FragColor;\n", "");
+        s = s.replace("FragColor", "gl_FragColor");
+        // gpu_shader4 spells it textureSize2D
+        s = s.replace("textureSize(", "textureSize2D(");
+        // NOTE: must come after textureSize replace or we'd get texture2DSize2D
+        s = s.replace("texture(", "texture2D(");
+    } else {
+        s = s.replace("\nout vec2 ", "\nvarying vec2 ");
+        s = s.replace("\nout vec3 ", "\nvarying vec3 ");
+        s = s.replace("\nout vec4 ", "\nvarying vec4 ");
+    }
+
+    s
+}
+
 pub(crate) unsafe fn compile_shader(
     gl: &GlFns,
     shader_type: GLenum,
@@ -333,6 +376,9 @@ pub(crate) unsafe fn compile_shader(
     if shader == 0 {
         return Err("glCreateShader returned 0".into());
     }
+
+    #[cfg(target_os = "macos")]
+    let source = patch_glsl_for_macos(source, shader_type);
 
     let src_ptr = source.as_ptr() as *const GLchar;
     let src_len = source.len() as GLint;
@@ -374,6 +420,12 @@ pub(crate) unsafe fn link_program(gl: &GlFns, vert_src: &str, frag_src: &str) ->
 
     (gl.attach_shader)(prog, vs);
     (gl.attach_shader)(prog, fs);
+
+    // GLSL 1.20 (macOS) doesn't have layout(location=N) so we bind
+    // attribs manually. Harmless no-op on Linux where layouts already work.
+    (gl.bind_attrib_location)(prog, 0, b"aPos\0".as_ptr() as *const _);
+    (gl.bind_attrib_location)(prog, 1, b"aTexCoord\0".as_ptr() as *const _);
+
     (gl.link_program)(prog);
 
     // shaders can be deleted right after linking

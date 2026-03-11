@@ -536,6 +536,41 @@ impl GlOverlayRenderer {
 
         gl_state::set_compositor_state(gl, vp);
 
+        // log GL context info on first frame - helps debug driver quirks
+        static DIAG_ONCE: std::sync::Once = std::sync::Once::new();
+        DIAG_ONCE.call_once(|| {
+            while (gl.get_error)() != 0 {} // drain any stale errors
+
+            let ver = (gl.get_string)(0x1F02 /* GL_VERSION */);
+            let ren = (gl.get_string)(0x1F01 /* GL_RENDERER */);
+            let ver_s = if !ver.is_null() { std::ffi::CStr::from_ptr(ver).to_string_lossy() } else { "null".into() };
+            let ren_s = if !ren.is_null() { std::ffi::CStr::from_ptr(ren).to_string_lossy() } else { "null".into() };
+            tracing::info!(%ver_s, %ren_s, vp_w, vp_h,
+                solid = self.solid_prog, gradient = self.gradient_prog,
+                border = self.border_prog, passthrough = self.passthrough_prog,
+                filter = self.filter_prog, quad_vao = self.quad_vao, quad_vbo = self.quad_vbo,
+                "draw_scene: GL context info");
+
+            // quick sanity check that our VAO can actually draw something
+            (gl.use_program)(self.solid_prog);
+            (gl.bind_vertex_array)(self.quad_vao);
+            (gl.draw_arrays)(GL_TRIANGLES, 0, 3);
+            let e = (gl.get_error)();
+            tracing::info!(quad_vao = self.quad_vao, draw_err = e,
+                "draw_scene: VAO test (0=ok)");
+        });
+
+        // every ~300 frames, log what we're actually drawing
+        if self.state_frame % 300 == 1 {
+            let n_solid = elements.iter().filter(|e| matches!(e, SceneElement::SolidRect { .. })).count();
+            let n_grad = elements.iter().filter(|e| matches!(e, SceneElement::Gradient { .. })).count();
+            let n_tex = elements.iter().filter(|e| matches!(e, SceneElement::Textured { .. })).count();
+            let n_ref = elements.iter().filter(|e| matches!(e, SceneElement::TextureRef { .. })).count();
+            let n_border = elements.iter().filter(|e| matches!(e, SceneElement::Border { .. })).count();
+            tracing::info!(n_solid, n_grad, n_tex, n_ref, n_border, total = elements.len(),
+                vp_w, vp_h, "draw_scene: element breakdown");
+        }
+
         // reset pixel unpack - Sodium sometimes leaves garbage here
         (gl.pixel_store_i)(GL_UNPACK_ROW_LENGTH, 0);
         (gl.pixel_store_i)(GL_UNPACK_SKIP_ROWS, 0);
@@ -663,8 +698,8 @@ impl GlOverlayRenderer {
         (gl.enable)(GL_SCISSOR_TEST);
         (gl.scissor)(x as GLint, gl_y, w as GLsizei, h as GLsizei);
 
-        // fullscreen tri clipped by scissor
-        (gl.bind_vertex_array)(0);
+        // need a VAO bound or macOS GL 2.1 refuses to draw
+        (gl.bind_vertex_array)(self.quad_vao);
         (gl.draw_arrays)(GL_TRIANGLES, 0, 3);
 
         (gl.disable)(GL_SCISSOR_TEST);
@@ -689,7 +724,7 @@ impl GlOverlayRenderer {
             (gl.scissor)(s[0] as GLint, gl_y, s[2] as GLsizei, s[3] as GLsizei);
         }
 
-        (gl.bind_vertex_array)(0);
+        (gl.bind_vertex_array)(self.quad_vao);
         (gl.draw_arrays)(GL_TRIANGLES, 0, 3);
 
         if scissor.is_some() {
@@ -711,7 +746,7 @@ impl GlOverlayRenderer {
         (gl.uniform_1f)(self.border_locs.radius, radius);
         (gl.uniform_2f)(self.border_locs.resolution, vp_w, vp_h);
 
-        (gl.bind_vertex_array)(0);
+        (gl.bind_vertex_array)(self.quad_vao);
         (gl.draw_arrays)(GL_TRIANGLES, 0, 3);
     }
 
