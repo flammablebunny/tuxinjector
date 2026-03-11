@@ -661,8 +661,6 @@ dependencies = [
 [[package]]
 name = "imgui-glow-renderer"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b191cbb795a471d9f9d46cc5f5d43a0afbf9ee43b3ef7b68083e98e4dbe30ad"
 dependencies = [
  "glow",
  "imgui",

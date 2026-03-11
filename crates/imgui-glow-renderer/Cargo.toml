@@ -1,0 +1,35 @@
+[package]
+name = "imgui-glow-renderer"
+version = "0.13.0"
+edition = "2021"
+description = "Local files of imgui-glow-renderer with GLSL 1.20 fallback for macOS GL 2.1"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "imgui_glow_renderer"
+path = "src/lib.rs"
+
+[dependencies]
+glow = "0.14"
+imgui = "0.12.0"
+memoffset = "0.9"
+
+[features]
+bind_sampler_support = []
+bind_vertex_array_support = []
+clip_origin_support = []
+debug_message_insert_support = []
+default = [
+    "gl_extensions_support",
+    "debug_message_insert_support",
+    "bind_vertex_array_support",
+    "vertex_offset_support",
+    "clip_origin_support",
+    "bind_sampler_support",
+    "polygon_mode_support",
+    "primitive_restart_support",
+]
+gl_extensions_support = []
+polygon_mode_support = []
+primitive_restart_support = []
+vertex_offset_support = []

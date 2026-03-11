@@ -65,6 +65,9 @@ tuxinjector-capture = { path = "crates/tuxinjector-capture" }
 tuxinjector-lua = { path = "crates/tuxinjector-lua" }
 tuxinjector-plugin-api = { path = "crates/tuxinjector-plugin-api" }
 
+[patch.crates-io]
+imgui-glow-renderer = { path = "crates/imgui-glow-renderer" }
+
 [profile.release]
 lto = "thin"
 strip = "symbols"
