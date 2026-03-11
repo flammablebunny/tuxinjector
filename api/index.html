@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Minecraft speedrunning overlay for Linux - Pure Rust + OpenGL">
+        <meta name="description" content="Minecraft speedrunning overlay for Linux & macOS - Rust + OpenGL">
       
       
       
@@ -1081,6 +1081,95 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Thanks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../thanks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -1131,10 +1220,15 @@ Lua before, these are good starting points:</p>
 Lua code executed by tuxinjector is allowed to interact with the host operating
 system in various ways, such as spawning subprocesses. Read other people's code
 and do not blindly copy and paste it into your own configuration. <em>cough</em> gore <em>cough</em></p>
+<p>[!WARNING]
+Not everything you can do with tuxinjector's Lua API is legal for speedrun.com
+submissions or MCSR Ranked. If you're unsure whether something is allowed,
+check the rulebook or ask a mod before using it in runs you intend to submit.</p>
 </blockquote>
 <h1 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h1>
 <p>By default, tuxinjector reads and executes a configuration file from
-<code>~/.config/tuxinjector/init.lua</code>.</p>
+<code>~/.config/tuxinjector/init.lua</code>. Additional profiles are stored in
+<code>~/.config/tuxinjector/profiles/&lt;name&gt;.lua</code> and can be switched via the in-game GUI.</p>
 <p>The config file has to return a table with all the display, input, overlay,
 hotkey, and mode settings. You can also use the API module to register keybindings and call runtime functions:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kd">local</span><span class="w"> </span><span class="nv">tx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">require</span><span class="p">(</span><span class="s2">&quot;tuxinjector&quot;</span><span class="p">)</span>
@@ -1153,10 +1247,11 @@ hotkey, and mode settings. You can also use the API module to register keybindin
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">}</span>
 </code></pre></div>
 <h1 id="hot-reload">Hot reload<a class="headerlink" href="#hot-reload" title="Permanent link">&para;</a></h1>
-<p>Tuxinjector watches for changes to <code>init.lua</code> within the configuration directory.
-When it detects a change, it will automatically reload your configuration. The
-Lua VM is destroyed and recreated, so any state within will not be transferred
-to the new configuration.</p>
+<p>Tuxinjector watches for changes to any <code>.lua</code> file within the configuration
+directory (including profile files in <code>profiles/</code>). When it detects a change, it
+automatically reloads the currently active config - whether that's <code>init.lua</code> or
+a named profile. The Lua VM is destroyed and recreated, so any state within will
+not be transferred to the new configuration.</p>
 
 
 

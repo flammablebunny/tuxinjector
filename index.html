@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Minecraft speedrunning overlay for Linux - Pure Rust + OpenGL">
+        <meta name="description" content="Minecraft speedrunning overlay for Linux & macOS - Rust + OpenGL">
       
       
       
@@ -1160,6 +1160,95 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Thanks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="thanks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -1251,28 +1340,29 @@
 
 
 <h1 id="introduction">Introduction<a class="headerlink" href="#introduction" title="Permanent link">&para;</a></h1>
-<p><strong>Docs Version:</strong> 1.0
-<strong>Project:</strong> Tuxinjector - Injection based minecraft speedrunning tool 
-<strong>Stack:</strong> Rust / OpenGL (GLSL 300 ES) / GLFW interception / Lua config / imgui-rs</p>
+<p><strong>Docs Version:</strong> 1.1
+<strong>Project:</strong> Tuxinjector - Injection based minecraft speedrunning tool
+<strong>Stack:</strong> Rust / OpenGL (GLSL 300 ES on Linux, 1.20 on macOS) / GLFW interception / Lua config / imgui-rs</p>
 <hr />
 <h2 id="what-is-tuxinjector">What is Tuxinjector?<a class="headerlink" href="#what-is-tuxinjector" title="Permanent link">&para;</a></h2>
-<p>Tuxinjector is a pure-Rust overlay which injects into Minecraft's rendering pipeline on Linux by using <code>LD_PRELOAD</code>. This makes it render directly in the game's OpenGL backbuffer, which easily provides real time resizing and overlays for speedrunning (Or just general use) without any external capture or compositing overhead.</p>
-<!-- TODO: Update this for MacOs Implementation, which should be relatively soon. -->
+<p>Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses <code>LD_PRELOAD</code> (Linux) or <code>DYLD_INSERT_LIBRARIES</code> (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.</p>
 <h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Tuxinjector is compiled into a shared object (<code>tuxinjector.so</code>) which gets loaded via <code>LD_PRELOAD</code> before the game starts. When the game's JVM calls <code>dlsym</code> to look up OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrapper functions. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.</p>
+<p>Tuxinjector compiles to a shared library (<code>tuxinjector.so</code> on Linux, <code>tuxinjector.dylib</code> on macOS) that gets loaded before the game starts. When the JVM calls <code>dlsym</code> to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Game launch:
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  LD_PRELOAD=tuxinjector.so minecraft
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>1. Game&#39;s JVM loads -&gt; dlsym(&quot;eglSwapBuffers&quot;) -&gt; tuxinjector&#39;s hooked dlsym
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>2. Hooked dlsym: stash real eglSwapBuffers, return hooked_egl_swap_buffers
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>3. Every frame: game calls hooked_egl_swap_buffers
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>4. Hook: render_overlay() -&gt; draw scene into backbuffer -&gt; call real eglSwapBuffers
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>5. Buffer is presented with overlay composited on top
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  LD_PRELOAD=tuxinjector.so minecraft           # Linux
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  DYLD_INSERT_LIBRARIES=tuxinjector.dylib minecraft  # macOS
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>1. Game&#39;s JVM loads -&gt; dlsym(&quot;eglSwapBuffers&quot;) -&gt; tuxinjector&#39;s hooked dlsym
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>2. Hooked dlsym: stash real eglSwapBuffers, return hooked_egl_swap_buffers
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>3. Every frame: game calls hooked_egl_swap_buffers
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>4. Hook: render_overlay() -&gt; draw scene into backbuffer -&gt; call real eglSwapBuffers
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>5. Buffer is presented with overlay composited on top
 </code></pre></div>
 <p>Input works the same way - <code>dlsym("glfwSetKeyCallback")</code> gets intercepted, the game's callback is stashed, and our wrapper gets installed instead. The wrapper handles hotkeys and key rebinds before forwarding events to the game.</p>
+<p>On macOS the hook mechanism is slightly different: <code>dlsym</code> itself is interposed via <code>__DATA,__interpose</code> (Mach-O linker feature) instead of PLT hooking, and GLSL shaders are patched down from 300 ES to 1.20 at runtime for Apple's GL 2.1 compatibility context.</p>
 <hr />
 <h2 id="crate-structure">Crate Structure<a class="headerlink" href="#crate-structure" title="Permanent link">&para;</a></h2>
-<p>Tuxinjector is set up as a Rust workspace split up into 10 different crates. Splitting things up helps keep compile times low, and also makes it easier to isolate some of the unsafe GL stuff.</p>
+<p>Tuxinjector is set up as a Rust workspace split into 10 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.</p>
 <table>
 <thead>
 <tr>
@@ -1283,11 +1373,11 @@
 <tbody>
 <tr>
 <td><code>tuxinjector</code></td>
-<td>Main library: hooks, overlay state, mode system, plugin loader</td>
+<td>Main library: hooks, overlay state, mode system, mirror capture, plugin loader</td>
 </tr>
 <tr>
 <td><code>tuxinjector-core</code></td>
-<td>Shared types: Color, geometry, lock-free primitives (RCU, SPSC)</td>
+<td>Shared types: Color, geometry, lock-free primitives (RCU)</td>
 </tr>
 <tr>
 <td><code>tuxinjector-config</code></td>
@@ -1299,7 +1389,7 @@
 </tr>
 <tr>
 <td><code>tuxinjector-render</code></td>
-<td>Shader pipeline, texture management, image loading</td>
+<td>Image loading (PNG/JPEG/GIF animation)</td>
 </tr>
 <tr>
 <td><code>tuxinjector-gl-interop</code></td>
@@ -1315,7 +1405,7 @@
 </tr>
 <tr>
 <td><code>tuxinjector-capture</code></td>
-<td>Mirror capture (FBO readback, PBO async, zero-copy texture ref)</td>
+<td>Window overlay capture: PipeWire on Linux, CoreGraphics on macOS</td>
 </tr>
 <tr>
 <td><code>tuxinjector-plugin-api</code></td>
@@ -1326,8 +1416,7 @@
 <p>The split isn't perfect yet - a couple things are probably in misleading places, but it works and thats all that really matters :)</p>
 <hr />
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>Everything is configured through a single Lua file at <code>~/.config/tuxinjector/init.lua</code>. It returns a table with nested sub-configs:</p>
-<!-- Does macos have this directory? -->
+<p>Everything is configured through Lua files in <code>~/.config/tuxinjector/</code> (same path on both Linux and macOS). The default config is <code>init.lua</code>, with additional profiles stored in <code>profiles/&lt;name&gt;.lua</code>. It returns a table with nested sub-configs:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kr">return</span><span class="w"> </span><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="nv">display</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">        </span><span class="nv">defaultMode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Fullscreen&quot;</span><span class="p">,</span>
@@ -1348,7 +1437,7 @@
 <a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nv">modes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="p">},</span>
 <a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="p">}</span>
 </code></pre></div>
-<p>Hot-reload is supported - editing <code>init.lua</code> while the game is running applies changes immediately without needing to restart.</p>
+<p>Hot-reload is supported - editing any config file (including profile files in <code>profiles/</code>) while the game is running applies changes immediately without needing to restart. Profiles can also be switched live through the in-game GUI.</p>
 
 
 

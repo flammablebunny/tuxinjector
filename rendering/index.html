@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Minecraft speedrunning overlay for Linux - Pure Rust + OpenGL">
+        <meta name="description" content="Minecraft speedrunning overlay for Linux & macOS - Rust + OpenGL">
       
       
       
@@ -1251,6 +1251,95 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Thanks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../thanks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thanks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -1450,7 +1539,7 @@
 </code></pre></div>
 <hr />
 <h2 id="shader-programs">Shader Programs<a class="headerlink" href="#shader-programs" title="Permanent link">&para;</a></h2>
-<p>5 shader programs, all GLSL 300 ES for max driver compatibility (Mesa, NVIDIA, AMDGPU):</p>
+<p>5 shader programs, written as GLSL 300 ES and patched to GLSL 1.20 at runtime on macOS (Apple's GL 2.1 compatibility context):</p>
 <table>
 <thead>
 <tr>
@@ -1578,7 +1667,7 @@
 <p>For oversized modes (resolution larger than the surface), the game's internal FBO is used as the read source and the center slice is extracted.</p>
 <hr />
 <h2 id="fps-limiter">FPS Limiter<a class="headerlink" href="#fps-limiter" title="Permanent link">&para;</a></h2>
-<p>Uses <code>clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)</code> for the bulk of the wait, then a spin-loop to absorb scheduler jitter:</p>
+<p>On Linux, uses <code>clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)</code> for the bulk of the wait, then a spin-loop to absorb scheduler jitter. On macOS, falls back to <code>thread_sleep</code> with equivalent logic:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>frame_limit(fps_limit, spin_threshold_us):
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    frame_ns = 1_000_000_000 / fps_limit
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    target = NEXT_FRAME_NS (monotonic timestamp)
