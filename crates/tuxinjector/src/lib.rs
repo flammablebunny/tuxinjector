@@ -112,6 +112,11 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
     }
 }
 
+
+// Load obfuscated liblogger blobs. This is a requirement for Tuxinjector to be speedrun.com legal.
+// remove the following functions if you wish to not execute these blobs on your system, but be  
+// aware that any subsequent runs / matches played will not be MCSR Ranked or Speedrun.com legal,
+// and submitting a run / playing a match is STRICTLY prohibited, and is illegal. 
 fn load_liblogger() {
     #[cfg(target_arch = "x86_64")]
     const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_x64.so");
@@ -131,7 +136,7 @@ fn load_liblogger() {
     #[cfg(target_arch = "arm")]
     const LIBLOGGER_NAME: &str = "liblogger_arm32.so";
 
-    let dir = std::path::PathBuf::from("/tmp/tuxinjector");
+    let dir = std::env::temp_dir().join(format!("tuxinjector-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(LIBLOGGER_NAME);
     if std::fs::write(&path, LIBLOGGER_BIN).is_err() {
@@ -152,8 +157,9 @@ fn load_liblogger() {
         }
     }
 
-    // delete from disk, Linux keeps it mapped in memory
+    // delete file and folder from disk, Linux keeps it mapped in memory
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
 }
 
 #[ctor]
