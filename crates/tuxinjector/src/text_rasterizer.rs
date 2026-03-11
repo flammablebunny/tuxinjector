@@ -184,7 +184,14 @@ fn expand_tilde(path: &str) -> String {
 }
 
 fn load_font_file(path: &str) -> Option<FontArc> {
+    if path.is_empty() {
+        return resolve_fallback_font();
+    }
     let full = expand_tilde(path);
     let data = std::fs::read(&full).ok()?;
     FontArc::try_from_vec(data).ok()
+}
+
+fn resolve_fallback_font() -> Option<FontArc> {
+    crate::overlay_gen::resolve_fallback_font()
 }

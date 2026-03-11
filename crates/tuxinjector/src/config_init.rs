@@ -29,9 +29,9 @@ fn find_config_path() -> Option<PathBuf> {
         if let Some(found) = check_dir(&dir) { return Some(found); }
     }
 
-    // 3. ~/.local/share/tuxinjector/
+    // 3. data dir fallback (macOS: ~/.config/tuxinjector, Linux: ~/.local/share/tuxinjector)
     if let Ok(home) = std::env::var("HOME") {
-        let dir = PathBuf::from(home).join(".local/share/tuxinjector");
+        let dir = PathBuf::from(home).join(crate::data_subpath());
         if let Some(found) = check_dir(&dir) { return Some(found); }
     }
 
@@ -77,7 +77,16 @@ fn write_default_config() -> Option<PathBuf> {
         return Some(path); // don't overwrite
     }
 
-    match std::fs::write(&path, DEFAULT_INIT_LUA) {
+    // On macOS, rewrite data paths from ~/.local/share/tuxinjector to ~/.config/tuxinjector
+    #[cfg(target_os = "macos")]
+    let content = DEFAULT_INIT_LUA.replace(
+        "~/.local/share/tuxinjector",
+        "~/.config/tuxinjector",
+    );
+    #[cfg(target_os = "linux")]
+    let content = DEFAULT_INIT_LUA;
+
+    match std::fs::write(&path, content) {
         Ok(()) => {
             tracing::info!(path = %path.display(), "wrote default init.lua");
             Some(path)

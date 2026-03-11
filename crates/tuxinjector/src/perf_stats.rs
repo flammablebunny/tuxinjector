@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::fs;
 
 extern crate libc;
@@ -166,11 +168,13 @@ impl Drop for PerfStats {
 
 // --- Background poller ---
 
+#[cfg(target_os = "linux")]
 struct CpuJiffies {
     total: u64,
     idle: u64,
 }
 
+#[cfg(target_os = "linux")]
 fn poll_sysinfo(stats: Arc<PerfStats>) {
     // discover sysfs paths once at startup
     let cpu_temp = find_hwmon_file("k10temp", &["temp2_input", "temp1_input"]);
@@ -217,14 +221,49 @@ fn poll_sysinfo(stats: Arc<PerfStats>) {
     }
 }
 
-// --- sysfs / procfs helpers ---
+// TODO: macOS - use IOKit / host_statistics for CPU/GPU/RAM stats
+#[cfg(target_os = "macos")]
+fn poll_sysinfo(stats: Arc<PerfStats>) {
+    loop {
+        if stats.stop.load(Ordering::Relaxed) { break; }
+        thread::sleep(Duration::from_millis(500));
+    }
+}
 
+// --- monotonic clock ---
+
+#[cfg(target_os = "linux")]
 fn monotonic_ns() -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
+#[cfg(target_os = "macos")]
+fn monotonic_ns() -> u64 {
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct MachTimebaseInfo { numer: u32, denom: u32 }
+    extern "C" {
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+    }
+
+    static INFO: OnceLock<(u32, u32)> = OnceLock::new();
+    let (numer, denom) = *INFO.get_or_init(|| {
+        let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+        unsafe { mach_timebase_info(&mut info) };
+        (info.numer, info.denom)
+    });
+
+    let ticks = unsafe { mach_absolute_time() };
+    ticks * numer as u64 / denom as u64
+}
+
+// --- sysfs / procfs helpers ---
+
+#[cfg(target_os = "linux")]
 fn read_proc_stat() -> Option<CpuJiffies> {
     let content = fs::read_to_string("/proc/stat").ok()?;
     let line = content.lines().next()?;
@@ -239,6 +278,7 @@ fn read_proc_stat() -> Option<CpuJiffies> {
     Some(CpuJiffies { total, idle })
 }
 
+#[cfg(target_os = "linux")]
 fn calc_cpu_usage(prev: &CpuJiffies, cur: &CpuJiffies) -> f32 {
     let dt = cur.total.saturating_sub(prev.total) as f32;
     let di = cur.idle.saturating_sub(prev.idle) as f32;
@@ -246,6 +286,7 @@ fn calc_cpu_usage(prev: &CpuJiffies, cur: &CpuJiffies) -> f32 {
     ((dt - di) / dt * 100.0).clamp(0.0, 100.0)
 }
 
+#[cfg(target_os = "linux")]
 fn avg_cpu_freq_mhz() -> u32 {
     let cpu_dir = Path::new("/sys/devices/system/cpu");
     let Ok(entries) = fs::read_dir(cpu_dir) else { return 0 };
@@ -268,6 +309,7 @@ fn avg_cpu_freq_mhz() -> u32 {
     if n == 0 { 0 } else { (total_khz / n as u64 / 1000) as u32 }
 }
 
+#[cfg(target_os = "linux")]
 fn find_hwmon_dir(name: &str) -> Option<PathBuf> {
     for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
         let p = entry.path();
@@ -280,6 +322,7 @@ fn find_hwmon_dir(name: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn find_hwmon_file(hwmon: &str, candidates: &[&str]) -> Option<PathBuf> {
     let dir = find_hwmon_dir(hwmon)?;
     for &name in candidates {
@@ -289,20 +332,24 @@ fn find_hwmon_file(hwmon: &str, candidates: &[&str]) -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn read_millicelsius(path: &Path) -> Option<f32> {
     let s = fs::read_to_string(path).ok()?;
     let mc: i64 = s.trim().parse().ok()?;
     Some(mc as f32 / 1000.0)
 }
 
+#[cfg(target_os = "linux")]
 fn read_u32_file(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
+#[cfg(target_os = "linux")]
 fn read_u64_file(path: &Path) -> Option<u64> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
+#[cfg(target_os = "linux")]
 fn find_amd_drm_paths() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     let Ok(entries) = fs::read_dir("/sys/class/drm") else {
         return (None, None, None);
@@ -323,6 +370,7 @@ fn find_amd_drm_paths() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     (None, None, None)
 }
 
+#[cfg(target_os = "linux")]
 fn read_ram_mb() -> (u64, u64) {
     let Ok(content) = fs::read_to_string("/proc/meminfo") else { return (0, 0) };
     let mut total_kb = 0u64;
@@ -338,6 +386,7 @@ fn read_ram_mb() -> (u64, u64) {
     (used / 1024, total_kb / 1024)
 }
 
+#[cfg(target_os = "linux")]
 fn meminfo_val(line: &str) -> u64 {
     line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0)
 }

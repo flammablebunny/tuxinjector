@@ -30,10 +30,12 @@ pub fn generate_overlay(config: &Config) {
 }
 
 pub fn overlay_path() -> PathBuf {
-    let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{home}/.local/share")
-    });
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let base = format!("{home}/.config");
+    #[cfg(target_os = "linux")]
+    let base = std::env::var("XDG_DATA_HOME")
+        .unwrap_or_else(|_| format!("{home}/.local/share"));
     PathBuf::from(base)
         .join("tuxinjector")
         .join(OUTPUT_DIR)
@@ -342,7 +344,7 @@ fn color_to_rgba(c: &tuxinjector_core::Color, opacity: f32) -> [u8; 4] {
     ]
 }
 
-// Font loading with fallbacks: eyezoom path -> global theme -> fontconfig
+// Font loading with fallbacks: eyezoom path -> global theme -> system fallback
 fn load_font(eyezoom_path: &str, global_path: &str) -> Option<FontArc> {
     if !eyezoom_path.is_empty() {
         if let Some(f) = load_font_from_path(eyezoom_path) {
@@ -354,18 +356,61 @@ fn load_font(eyezoom_path: &str, global_path: &str) -> Option<FontArc> {
             return Some(f);
         }
     }
-    // try fontconfig as last resort
-    for family in &["JetBrainsMono Nerd Font", "Inter", "ProggyClean"] {
-        if let Ok(output) = std::process::Command::new("fc-match")
-            .args(["--format=%{file}", family])
-            .output()
-        {
-            if output.status.success() {
-                let p = String::from_utf8_lossy(&output.stdout);
-                let p = p.trim();
-                if !p.is_empty() {
-                    if let Some(f) = load_font_from_path(p) {
-                        return Some(f);
+    resolve_fallback_font()
+}
+
+/// Platform-aware font fallback when no font path is configured.
+/// Tries JetBrains Mono Nerd → Inter → ProggyClean via fontconfig (Linux)
+/// or known system font paths (macOS).
+pub fn resolve_fallback_font() -> Option<FontArc> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: check ~/Library/Fonts and /Library/Fonts for user-installed fonts,
+        // then fall back to system monospace fonts
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user_fonts: Vec<String> = ["JetBrainsMono Nerd Font", "JetBrainsMonoNerdFont", "Inter"]
+            .iter()
+            .flat_map(|name| {
+                // User-installed fonts can be .ttf or .otf with various naming
+                vec![
+                    format!("{}/Library/Fonts/{}-Regular.ttf", home, name.replace(' ', "")),
+                    format!("{}/Library/Fonts/{}-Regular.otf", home, name.replace(' ', "")),
+                    format!("/Library/Fonts/{}-Regular.ttf", name.replace(' ', "")),
+                    format!("/Library/Fonts/{}-Regular.otf", name.replace(' ', "")),
+                ]
+            })
+            .collect();
+        for path in &user_fonts {
+            if let Some(f) = load_font_from_path(path) {
+                return Some(f);
+            }
+        }
+        // System monospace fallbacks
+        for path in &[
+            "/System/Library/Fonts/SFNSMono.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Monaco.dfont",
+            "/System/Library/Fonts/Helvetica.ttc",
+        ] {
+            if let Some(f) = load_font_from_path(path) {
+                return Some(f);
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for family in &["JetBrainsMono Nerd Font", "Inter", "ProggyClean"] {
+            if let Ok(output) = std::process::Command::new("fc-match")
+                .args(["--format=%{file}", family])
+                .output()
+            {
+                if output.status.success() {
+                    let p = String::from_utf8_lossy(&output.stdout);
+                    let p = p.trim();
+                    if !p.is_empty() {
+                        if let Some(f) = load_font_from_path(p) {
+                            return Some(f);
+                        }
                     }
                 }
             }

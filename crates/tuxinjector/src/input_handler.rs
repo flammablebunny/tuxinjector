@@ -203,6 +203,16 @@ impl InputHandler for TuxinjectorInputHandler {
                 return (true, remapped);
             }
 
+            // Escape closes the GUI overlay
+            if orig == tuxinjector_input::glfw_types::GLFW_KEY_ESCAPE && action == 1 {
+                if let Some(lock) = state::get().overlay.get() {
+                    if let Ok(mut overlay) = lock.lock() {
+                        overlay.toggle_gui();
+                    }
+                }
+                return (true, remapped);
+            }
+
             // forward to GUI so characters like '/' work in text fields
             let pressed = action != 0;
             tuxinjector_input::push_gui_key(remapped, mods, pressed);
