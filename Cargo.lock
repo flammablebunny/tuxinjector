@@ -1659,6 +1659,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "tuxinjector-capture",
  "tuxinjector-config",
  "tuxinjector-core",
  "tuxinjector-gl-interop",
@@ -1675,6 +1676,7 @@ name = "tuxinjector-capture"
 version = "1.0.0"
 dependencies = [
  "dbus",
+ "libc",
  "pipewire",
  "tracing",
  "tuxinjector-core",

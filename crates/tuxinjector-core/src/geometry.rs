@@ -73,13 +73,16 @@ pub fn is_viewport_relative(anchor: &RelativeTo) -> bool {
 
 // Resolve anchor + offset into absolute screen coordinates.
 // This is the big match statement that all overlay positioning funnels through.
-// sw/sh = screen, ew/eh = element size, vp = game viewport.
+// sw/sh = screen dims, ew/eh = element size, vp = game viewport, gui_scale = MC's GUI scale.
+// display_scale = Retina content scale (2.0 on macOS Retina, 1.0 elsewhere).
 pub fn resolve_relative_position(
     anchor: RelativeTo,
     x: i32, y: i32,
     sw: i32, sh: i32,
     vp: &GameViewportGeometry,
     ew: i32, eh: i32,
+    gui_scale: u32,
+    display_scale: f32,
 ) -> (i32, i32) {
     let vx = vp.final_x;
     let vy = vp.final_y;
@@ -121,9 +124,21 @@ pub fn resolve_relative_position(
         RelativeTo::BottomRightScreen => (sw - ew - x, sh - eh - y),
         RelativeTo::BottomRightViewport => (vx + vw - ew - x, vy + vh - eh - y),
 
-        // pie chart positions - hardcoded MC debug screen offsets
-        RelativeTo::PieLeft => (vx + vw - 92 + x, vy + vh - 220 + y),
-        RelativeTo::PieRight => (vx + vw - 36 + x, vy + vh - 220 + y),
+        // pie chart anchors - the magic numbers (92, 36, 220) come from
+        // MC's debug screen at guiScale=3; we scale them for other scales.
+        // On macOS Retina the framebuffer is 2x, so multiply by display_scale.
+        RelativeTo::PieLeft => {
+            let s = gui_scale as f32 / 3.0 * display_scale;
+            let px = (92.0 * s).round() as i32;
+            let py = (220.0 * s).round() as i32;
+            (vx + vw - px + x, vy + vh - py + y)
+        }
+        RelativeTo::PieRight => {
+            let s = gui_scale as f32 / 3.0 * display_scale;
+            let px = (36.0 * s).round() as i32;
+            let py = (220.0 * s).round() as i32;
+            (vx + vw - px + x, vy + vh - py + y)
+        }
     }
 }
 
@@ -145,7 +160,7 @@ mod tests {
     #[test]
     fn top_left_screen_is_identity() {
         let vp = test_viewport();
-        let (px, py) = resolve_relative_position(RelativeTo::TopLeftScreen, 10, 20, 1920, 1080, &vp, 0, 0);
+        let (px, py) = resolve_relative_position(RelativeTo::TopLeftScreen, 10, 20, 1920, 1080, &vp, 0, 0, 3, 1.0);
         assert_eq!((px, py), (10, 20));
     }
 
@@ -153,7 +168,7 @@ mod tests {
     fn center_screen_with_element() {
         let vp = test_viewport();
         // 100x50 element on 1920x1080 screen
-        let (px, py) = resolve_relative_position(RelativeTo::CenterScreen, 0, 0, 1920, 1080, &vp, 100, 50);
+        let (px, py) = resolve_relative_position(RelativeTo::CenterScreen, 0, 0, 1920, 1080, &vp, 100, 50, 3, 1.0);
         assert_eq!((px, py), ((1920 - 100) / 2, (1080 - 50) / 2));
     }
 
@@ -161,7 +176,7 @@ mod tests {
     fn bottom_right_viewport() {
         let vp = test_viewport();
         let (px, py) =
-            resolve_relative_position(RelativeTo::BottomRightViewport, 10, 10, 1920, 1080, &vp, 200, 100);
+            resolve_relative_position(RelativeTo::BottomRightViewport, 10, 10, 1920, 1080, &vp, 200, 100, 3, 1.0);
         assert_eq!((px, py), (100 + 1600 - 200 - 10, 50 + 900 - 100 - 10));
     }
 
@@ -180,8 +195,34 @@ mod tests {
             final_x: 0, final_y: 0,
             final_w: 1920, final_h: 1080,
         };
-        let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 1920, 1080, &vp, 0, 0);
+        // default guiScale=3, display_scale=1.0 -> offsets 92, 220
+        let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 1920, 1080, &vp, 0, 0, 3, 1.0);
         assert_eq!((px, py), (1920 - 92, 1080 - 220));
+    }
+
+    #[test]
+    fn pie_left_anchor_gui_scale_2() {
+        let vp = GameViewportGeometry {
+            game_w: 1920, game_h: 1080,
+            final_x: 0, final_y: 0,
+            final_w: 1920, final_h: 1080,
+        };
+        // guiScale=2 -> 92*2/3=61, 220*2/3=147
+        let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 1920, 1080, &vp, 0, 0, 2, 1.0);
+        assert_eq!((px, py), (1920 - 61, 1080 - 147));
+    }
+
+    #[test]
+    fn pie_left_anchor_retina() {
+        // macOS Retina 2x: framebuffer is 3840x2160, display_scale=2.0
+        let vp = GameViewportGeometry {
+            game_w: 3840, game_h: 2160,
+            final_x: 0, final_y: 0,
+            final_w: 3840, final_h: 2160,
+        };
+        // guiScale=3, display_scale=2.0 -> offsets 92*2=184, 220*2=440
+        let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 3840, 2160, &vp, 0, 0, 3, 2.0);
+        assert_eq!((px, py), (3840 - 184, 2160 - 440));
     }
 
     #[test]
@@ -191,7 +232,7 @@ mod tests {
             final_x: 0, final_y: 0,
             final_w: 2560, final_h: 1440,
         };
-        let (px, py) = resolve_relative_position(RelativeTo::PieRight, 0, 0, 2560, 1440, &vp, 0, 0);
+        let (px, py) = resolve_relative_position(RelativeTo::PieRight, 0, 0, 2560, 1440, &vp, 0, 0, 3, 1.0);
         assert_eq!((px, py), (2560 - 36, 1440 - 220));
     }
 }

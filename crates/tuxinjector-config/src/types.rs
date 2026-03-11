@@ -1238,12 +1238,12 @@ impl Default for EyeZoomConfig {
             stretch_width: 810,
             window_width: 384,
             window_height: 16384,
-            horizontal_margin: 40,
-            vertical_margin: 180,
+            horizontal_margin: 0,
+            vertical_margin: 0,
             auto_font_size: true,
             text_font_size: 42,
             text_font_path: String::new(),
-            rect_height: 50,
+            rect_height: 40,
             link_rect_to_font: false,
             grid_color1: defaults::eyezoom_grid_color1(),
             grid_color1_opacity: 1.0,
@@ -1575,8 +1575,7 @@ impl Default for OverlaysConfig {
                     },
                     input: vec![MirrorCaptureConfig { x: 162, y: 7902, ..MirrorCaptureConfig::default() }],
                     output: MirrorRenderConfig {
-                        x: 94, y: 470,
-                        output_width: 900, output_height: 500,
+                        eyezoom_link: true,
                         ..MirrorRenderConfig::default()
                     },
                     ..MirrorConfig::default()
@@ -1586,8 +1585,11 @@ impl Default for OverlaysConfig {
             images: vec![
                 ImageConfig {
                     name: "measuringOverlay".into(),
+                    #[cfg(target_os = "macos")]
+                    path: "~/.config/tuxinjector/images/overlay.png".into(),
+                    #[cfg(target_os = "linux")]
                     path: "~/.local/share/tuxinjector/images/overlay.png".into(),
-                    x: 94, y: 470,
+                    eyezoom_link: true,
                     output_width: 900, output_height: 500,
                     ..ImageConfig::default()
                 },
@@ -1616,6 +1618,9 @@ pub struct DisplayConfig {
     pub disable_animations: bool,
     #[serde(default)]
     pub hide_animations_in_game: bool,
+    // minecraft's GUI scale setting - pie chart anchors scale with this
+    #[serde(default = "defaults::game_gui_scale")]
+    pub game_gui_scale: u32,
 }
 
 impl Default for DisplayConfig {
@@ -1627,6 +1632,7 @@ impl Default for DisplayConfig {
             mirror_gamma_mode: MirrorGammaMode::Auto,
             disable_animations: false,
             hide_animations_in_game: true,
+            game_gui_scale: defaults::game_gui_scale(),
         }
     }
 }

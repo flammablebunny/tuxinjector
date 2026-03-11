@@ -16,10 +16,9 @@ const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const SCREENCAST_IFACE: &str = "org.freedesktop.portal.ScreenCast";
 const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 
-// NOTE: triggers unused warning without pipewire feature, but
-// pipewire_capture needs it exported
 pub struct PortalSession {
     pub node_id: u32,
+    #[allow(dead_code)] // kept alive for the portal session handle
     pub session_path: String,
     pub restore_token: Option<String>,
 }

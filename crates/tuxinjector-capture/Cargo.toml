@@ -11,6 +11,11 @@ pipewire = ["dep:pipewire", "dep:dbus"]
 tuxinjector-core = { workspace = true }
 tracing = { workspace = true }
 
-# PipeWire capture (optional, enabled by default)
+# PipeWire capture (Linux only, enable with --features pipewire)
+[target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.8", optional = true }
 dbus = { version = "0.9", optional = true }
+
+# macOS CG capture (no optional deps, all via dlsym)
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }

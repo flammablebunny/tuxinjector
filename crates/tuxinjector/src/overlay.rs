@@ -66,6 +66,94 @@ use crate::render_thread::{SceneDescription, SceneElement};
 const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
 const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
 
+// --- window overlay capture ---
+
+// Wraps MacCapture (macOS) or PipeWire (Linux) behind a common interface
+struct WindowCaptureManager {
+    #[cfg(target_os = "macos")]
+    inner: tuxinjector_capture::mac_capture::MacCapture,
+    // TODO: wire up PipeWire capture on Linux (needs portal picker UI)
+    #[cfg(target_os = "linux")]
+    _placeholder: (),
+}
+
+impl WindowCaptureManager {
+    fn new() -> Self {
+        Self {
+            #[cfg(target_os = "macos")]
+            inner: tuxinjector_capture::mac_capture::MacCapture::new(),
+            #[cfg(target_os = "linux")]
+            _placeholder: (),
+        }
+    }
+
+    // Start/stop capture sessions to match current config
+    fn sync_sessions(&mut self, configs: &[tuxinjector_config::types::WindowOverlayConfig]) {
+        let wanted: std::collections::HashSet<&str> = configs.iter()
+            .filter(|c| !c.name.is_empty())
+            .map(|c| c.name.as_str())
+            .collect();
+
+        // stop sessions that are no longer wanted
+        let active = self.active_sessions();
+        for id in &active {
+            if !wanted.contains(id.as_str()) {
+                self.stop_capture(id);
+            }
+        }
+
+        // start sessions for new overlays
+        for cfg in configs {
+            if cfg.name.is_empty() { continue; }
+            if active.iter().any(|a| a == &cfg.name) { continue; }
+
+            let title = if cfg.window_title.is_empty() { None } else { Some(cfg.window_title.as_str()) };
+            let owner = if cfg.executable_name.is_empty() {
+                if cfg.window_class.is_empty() { None } else { Some(cfg.window_class.as_str()) }
+            } else {
+                Some(cfg.executable_name.as_str())
+            };
+
+            if title.is_none() && owner.is_none() { continue; }
+
+            let fps = cfg.fps.max(1) as u32;
+            if let Err(e) = self.start_capture(&cfg.name, title, owner, fps) {
+                tracing::warn!(id = cfg.name, error = %e, "window overlay: failed to start capture");
+            }
+        }
+    }
+
+    fn start_capture(&mut self, id: &str, title: Option<&str>, owner: Option<&str>, fps: u32)
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        #[cfg(target_os = "macos")]
+        { self.inner.start_capture(id, title, owner, fps) }
+        #[cfg(target_os = "linux")]
+        { let _ = (id, title, owner, fps); Ok(()) }
+    }
+
+    fn stop_capture(&mut self, id: &str) {
+        #[cfg(target_os = "macos")]
+        { self.inner.stop_capture(id); }
+        #[cfg(target_os = "linux")]
+        { let _ = id; }
+    }
+
+    fn latest_frame(&self, id: &str) -> Option<tuxinjector_capture::CapturedFrame> {
+        #[cfg(target_os = "macos")]
+        { self.inner.latest_frame(id) }
+        #[cfg(target_os = "linux")]
+        { let _ = id; None }
+    }
+
+    fn active_sessions(&self) -> Vec<String> {
+        #[cfg(target_os = "macos")]
+        { self.inner.active_sessions() }
+        #[cfg(target_os = "linux")]
+        { Vec::new() }
+    }
+}
+
 // --- OverlayState ---
 
 // Owns the GL compositor, mode system, mirror capture, and GUI.
@@ -82,6 +170,7 @@ pub struct OverlayState {
     text_cache: TextOverlayCache,
     gui: GuiRenderer,
     app_capture: AppCaptureManager,
+    win_capture: WindowCaptureManager,
     w: u32,
     h: u32,
     frame: u64,
@@ -465,6 +554,7 @@ impl OverlayState {
             text_cache: TextOverlayCache::new(),
             gui,
             app_capture: AppCaptureManager::new(),
+            win_capture: WindowCaptureManager::new(),
             w: 0, h: 0,
             frame: 0,
             t_start: Instant::now(),
@@ -537,6 +627,9 @@ impl OverlayState {
 
         let t_mirrors = Instant::now();
 
+        // sync window overlay capture sessions with config
+        self.win_capture.sync_sessions(&cfg.overlays.window_overlays);
+
         let mut scene = build_scene(
             &layout, vp_w, vp_h,
             &mut self.mirrors,
@@ -549,6 +642,7 @@ impl OverlayState {
             &self.game_uv_rects,
             self.images_visible,
             self.windows_visible,
+            &self.win_capture,
             self.t_start.elapsed().as_secs_f32(),
         );
 
@@ -657,13 +751,16 @@ impl OverlayState {
             let (mx, my) = tuxinjector_input::raw_mouse_position();
             let scroll = tuxinjector_input::take_gui_scroll();
 
+            // retina: convert logical points -> framebuffer pixels
+            let (sx, sy) = unsafe { crate::viewport_hook::content_scale() };
+
             let raw_keys = tuxinjector_input::take_gui_keys();
             let keys: Vec<(i32, bool, i32)> = raw_keys.into_iter()
                 .map(|(k, mods, pressed)| (k, pressed, mods))
                 .collect();
 
             let gui_input = GuiInput {
-                pointer_pos: Some((mx as f32, my as f32)),
+                pointer_pos: Some((mx as f32 * sx, my as f32 * sy)),
                 pointer_button_pressed: tuxinjector_input::take_gui_button_press(),
                 pointer_button_released: tuxinjector_input::take_gui_button_release(),
                 rbutton_pressed: tuxinjector_input::take_gui_rbutton_press(),
@@ -715,10 +812,15 @@ impl OverlayState {
 
         let gl = &self.local_gl;
 
+        let ds = crate::mode_system::display_scale();
         let desired: Vec<(&str, u32, u32)> = layout.mirrors.iter()
             .filter_map(|ml| {
                 cfg.overlays.mirrors.iter().find(|m| m.name == ml.mirror_id)
-                    .map(|m| (ml.mirror_id.as_str(), m.capture_width.max(1) as u32, m.capture_height.max(1) as u32))
+                    .map(|m| {
+                        let w = (m.capture_width.max(1) as f32 * ds).round() as u32;
+                        let h = (m.capture_height.max(1) as f32 * ds).round() as u32;
+                        (ml.mirror_id.as_str(), w, h)
+                    })
             })
             .collect();
 
@@ -794,13 +896,21 @@ impl OverlayState {
                     final_w: game_w, final_h: game_h,
                 };
                 let anchor = parse_relative_to(&inp.relative_to);
+                let ds = crate::mode_system::display_scale();
+                // Scale input offsets and capture size by display_scale on Retina:
+                // config values are in MC GUI pixels, framebuffer is Nx on Retina.
+                let scaled_x = (inp.x as f32 * ds).round() as i32;
+                let scaled_y = (inp.y as f32 * ds).round() as i32;
+                let scaled_cw = (mcfg.capture_width as f32 * ds).round() as i32;
+                let scaled_ch = (mcfg.capture_height as f32 * ds).round() as i32;
                 let (ax, ay) = resolve_relative_position(
-                    anchor, inp.x, inp.y,
+                    anchor, scaled_x, scaled_y,
                     orig_w as i32, orig_h as i32, &viewport, 0, 0,
+                    cfg.display.game_gui_scale, ds,
                 );
-                let gl_y = flip_h - (ay + mcfg.capture_height);
-                let cw = mcfg.capture_width as f32;
-                let ch = mcfg.capture_height as f32;
+                let gl_y = flip_h - (ay + scaled_ch);
+                let cw = scaled_cw as f32;
+                let ch = scaled_ch as f32;
                 let tw = src_w as f32;
                 let th = src_h as f32;
                 let uv = [ax as f32 / tw, gl_y as f32 / th, (ax as f32 + cw) / tw, (gl_y as f32 + ch) / th];
@@ -837,13 +947,20 @@ impl OverlayState {
                 };
                 let flip_h = if source_fbo.is_some() { game_h } else { orig_h as i32 };
 
+                let gs = cfg.display.game_gui_scale;
+                let ds = crate::mode_system::display_scale();
+                // Scale capture dimensions and input offsets by display_scale on Retina
+                let scaled_cw = (mcfg.capture_width as f32 * ds).round() as i32;
+                let scaled_ch = (mcfg.capture_height as f32 * ds).round() as i32;
                 let inputs: Vec<(i32, i32)> = mcfg.input.iter().map(|inp| {
                     let anchor = parse_relative_to(&inp.relative_to);
+                    let sx = (inp.x as f32 * ds).round() as i32;
+                    let sy = (inp.y as f32 * ds).round() as i32;
                     let (ax, ay) = resolve_relative_position(
-                        anchor, inp.x, inp.y,
-                        orig_w as i32, orig_h as i32, &viewport, 0, 0,
+                        anchor, sx, sy,
+                        orig_w as i32, orig_h as i32, &viewport, 0, 0, gs, ds,
                     );
-                    (ax, flip_h - (ay + mcfg.capture_height))
+                    (ax, flip_h - (ay + scaled_ch))
                 }).collect();
 
                 if let Some(cap) = self.mirrors.get_mut(&ml.mirror_id) {
@@ -853,28 +970,28 @@ impl OverlayState {
                     if is_multi && (!is_filtered || do_blit_filtered) {
                         cap.capture_multi_from(
                             gl, &inputs,
-                            mcfg.capture_width, mcfg.capture_height,
+                            scaled_cw, scaled_ch,
                             source_fbo, mcfg.nearest_filter,
                         );
                     } else if !is_multi && is_filtered && do_blit_filtered {
                         let (sx, sy) = inputs.first().copied().unwrap_or((
-                            vp_off_x + game_w / 2 - mcfg.capture_width / 2,
-                            vp_off_y + game_h / 2 - mcfg.capture_height / 2,
+                            vp_off_x + game_w / 2 - scaled_cw / 2,
+                            vp_off_y + game_h / 2 - scaled_ch / 2,
                         ));
                         cap.capture_from(
                             gl, sx, sy,
-                            mcfg.capture_width, mcfg.capture_height,
+                            scaled_cw, scaled_ch,
                             source_fbo, mcfg.nearest_filter,
                             false, // need readback for filtered mirrors
                         );
                     } else if do_blit {
                         let (sx, sy) = inputs.first().copied().unwrap_or((
-                            vp_off_x + game_w / 2 - mcfg.capture_width / 2,
-                            vp_off_y + game_h / 2 - mcfg.capture_height / 2,
+                            vp_off_x + game_w / 2 - scaled_cw / 2,
+                            vp_off_y + game_h / 2 - scaled_ch / 2,
                         ));
                         cap.capture_from(
                             gl, sx, sy,
-                            mcfg.capture_width, mcfg.capture_height,
+                            scaled_cw, scaled_ch,
                             source_fbo, mcfg.nearest_filter,
                             true, // skip readback for TextureRef
                         );
@@ -1060,7 +1177,8 @@ fn build_scene(
     game_tex: Option<(u32, u32, u32)>,
     game_uv_rects: &HashMap<String, [f32; 4]>,
     images_visible: bool,
-    _windows_visible: bool,
+    windows_visible: bool,
+    win_capture: &WindowCaptureManager,
     time: f32,
 ) -> SceneDescription {
     let mut elems = Vec::new();
@@ -1323,12 +1441,12 @@ fn build_scene(
                 .map(|i| (i.scale, i.output_width, i.output_height))
                 .unwrap_or((1.0, 0, 0));
 
-            // priority: outputWidth/Height > layout dims > tex*scale
-            let rw = if out_w > 0 { out_w as f32 }
-                     else if il.width > 0.0 { il.width }
+            // priority: eyezoom_link dims > explicit output size > tex*scale
+            let rw = if il.width > 0.0 { il.width }
+                     else if out_w > 0 { out_w as f32 }
                      else { tw as f32 * scale };
-            let rh = if out_h > 0 { out_h as f32 }
-                     else if il.height > 0.0 { il.height }
+            let rh = if il.height > 0.0 { il.height }
+                     else if out_h > 0 { out_h as f32 }
                      else { th as f32 * scale };
 
             elems.push(SceneElement::Textured {
@@ -1389,6 +1507,84 @@ fn build_scene(
                     radius: tcfg.border.radius as f32,
                     color: tcfg.border.color.to_array(),
                 });
+            }
+        }
+    }
+
+    // --- window overlays ---
+    if windows_visible {
+        for wol in &layout.window_overlays {
+            if let Some(frame) = win_capture.latest_frame(&wol.wo_id) {
+                let fw = frame.width as i32;
+                let fh = frame.height as i32;
+
+                // apply crop
+                let cx0 = wol.crop_left.min(fw);
+                let cy0 = wol.crop_top.min(fh);
+                let cx1 = wol.crop_right.min(fw - cx0);
+                let cy1 = wol.crop_bottom.min(fh - cy0);
+                let cw = (fw - cx0 - cx1).max(0) as u32;
+                let ch = (fh - cy0 - cy1).max(0) as u32;
+
+                if cw == 0 || ch == 0 { continue; }
+
+                // crop the pixel data
+                let pixels = if cx0 > 0 || cy0 > 0 || cx1 > 0 || cy1 > 0 {
+                    let mut cropped = Vec::with_capacity((cw * ch * 4) as usize);
+                    for row in cy0..(fh - cy1) {
+                        let src_start = (row as u32 * frame.width + cx0 as u32) as usize * 4;
+                        let src_end = src_start + (cw as usize * 4);
+                        if src_end <= frame.pixels.len() {
+                            cropped.extend_from_slice(&frame.pixels[src_start..src_end]);
+                        }
+                    }
+                    cropped
+                } else {
+                    frame.pixels
+                };
+
+                // apply opacity
+                let pixels = if wol.opacity < 1.0 {
+                    let a = (wol.opacity * 255.0) as u8;
+                    let mut buf = pixels;
+                    for chunk in buf.chunks_exact_mut(4) {
+                        chunk[3] = ((chunk[3] as u16 * a as u16) / 255) as u8;
+                    }
+                    buf
+                } else {
+                    pixels
+                };
+
+                let render_w = cw as f32 * wol.scale;
+                let render_h = ch as f32 * wol.scale;
+
+                elems.push(SceneElement::Textured {
+                    x: wol.x, y: wol.y,
+                    w: render_w, h: render_h,
+                    tex_width: cw, tex_height: ch,
+                    pixels,
+                    circle_clip: false,
+                    nearest_filter: wol.pixelated_scaling,
+                    filter_target_colors: Vec::new(),
+                    filter_output_color: [0.0; 4],
+                    filter_sensitivity: 0.0,
+                    filter_color_passthrough: false,
+                    filter_border_color: [0.0; 4],
+                    filter_border_width: 0,
+                    filter_gamma_mode: 0,
+                    custom_shader: None,
+                });
+
+                // border
+                if let Some(ref border) = wol.border {
+                    elems.push(SceneElement::Border {
+                        x: wol.x, y: wol.y,
+                        w: render_w, h: render_h,
+                        border_width: border.border_width,
+                        radius: border.radius,
+                        color: border.color,
+                    });
+                }
             }
         }
     }

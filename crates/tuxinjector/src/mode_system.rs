@@ -6,6 +6,7 @@ use std::time::Instant;
 use tuxinjector_config::types::{
     BackgroundConfig, BorderConfig, Config, EyeZoomConfig, GradientAnimationType, ImageConfig,
     MirrorBorderType, MirrorConfig, MirrorRenderConfig, ModeConfig, TextOverlayConfig,
+    WindowOverlayConfig,
 };
 use tuxinjector_config::expr::{evaluate_expression, is_expression};
 use tuxinjector_core::geometry::{
@@ -25,6 +26,7 @@ pub struct FrameLayout {
     pub mirrors: Vec<MirrorLayout>,
     pub images: Vec<ImageLayout>,
     pub text_overlays: Vec<TextOverlayLayout>,
+    pub window_overlays: Vec<WindowOverlayLayout>,
     pub border: Option<BorderLayout>,
     pub eyezoom: Option<EyeZoomLayout>,
 }
@@ -81,6 +83,21 @@ pub struct TextOverlayLayout {
 }
 
 #[derive(Debug, Clone)]
+pub struct WindowOverlayLayout {
+    pub wo_id: String,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub opacity: f32,
+    pub crop_top: i32,
+    pub crop_bottom: i32,
+    pub crop_left: i32,
+    pub crop_right: i32,
+    pub pixelated_scaling: bool,
+    pub border: Option<BorderLayout>,
+}
+
+#[derive(Debug, Clone)]
 pub enum BackgroundSpec {
     None,
     SolidColor([f32; 4]),
@@ -112,6 +129,11 @@ pub struct EyeZoomLayout {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    // mirror/overlay rect, scales proportionally to screen height
+    pub mirror_x: f32,
+    pub mirror_y: f32,
+    pub mirror_w: f32,
+    pub mirror_h: f32,
     // source region in game framebuffer
     pub src_x: i32,
     pub src_y: i32,
@@ -324,6 +346,7 @@ impl ModeSystem {
         let mirrors = self.build_mirrors(config, mode, &viewport, eyezoom.as_ref());
         let images = self.build_images(config, mode, &viewport, eyezoom.as_ref());
         let texts = self.build_text_overlays(config, mode, &viewport);
+        let woverlays = self.build_window_overlays(config, mode, &viewport);
         let border = if mode.border.enabled {
             Some(build_border(&mode.border, vp_x, vp_y, vp_w, vp_h))
         } else {
@@ -349,6 +372,7 @@ impl ModeSystem {
             mirrors,
             images,
             text_overlays: texts,
+            window_overlays: woverlays,
             border,
             eyezoom,
         }
@@ -359,6 +383,14 @@ impl ModeSystem {
     pub fn resolve_dimensions(&self, mode: &ModeConfig) -> (f32, f32) {
         let sw = self.screen_w as i32;
         let sh = self.screen_h as i32;
+
+        // macOS Retina: mode dimensions are in GLFW window points, but
+        // screen_w/screen_h are framebuffer pixels. Scale absolute mode
+        // dimensions by the content scale factor so they match.
+        #[cfg(target_os = "macos")]
+        let (scale_x, scale_y) = unsafe { crate::viewport_hook::content_scale() };
+        #[cfg(target_os = "linux")]
+        let (scale_x, scale_y) = (1.0f32, 1.0f32);
 
         let w = if !mode.width_expr.is_empty() && is_expression(&mode.width_expr) {
             let res = evaluate_expression(&mode.width_expr, sw, sh);
@@ -373,7 +405,7 @@ impl ModeSystem {
         } else if mode.use_relative_size {
             self.screen_w as f32 * mode.relative_width
         } else if mode.width > 0 {
-            mode.width as f32
+            mode.width as f32 * scale_x
         } else {
             self.screen_w as f32
         };
@@ -391,7 +423,7 @@ impl ModeSystem {
         } else if mode.use_relative_size {
             self.screen_h as f32 * mode.relative_height
         } else if mode.height > 0 {
-            mode.height as f32
+            mode.height as f32 * scale_y
         } else {
             self.screen_h as f32
         };
@@ -496,13 +528,16 @@ impl ModeSystem {
     ) -> Vec<MirrorLayout> {
         let mut out = Vec::with_capacity(mode.mirror_ids.len());
         let gamma = config.display.mirror_gamma_mode as i32;
+        let gs = config.display.game_gui_scale;
 
         for mid in &mode.mirror_ids {
             let mirror = match find_mirror(config, mid) {
                 Some(m) => m,
                 None => continue,
             };
-            out.push(self.layout_mirror(mid, mirror, viewport, gamma, eyezoom));
+            if let Some(ml) = self.layout_mirror(mid, mirror, viewport, gamma, eyezoom, gs) {
+                out.push(ml);
+            }
         }
 
         // mirror groups
@@ -538,9 +573,11 @@ impl ModeSystem {
                             hybrid.scale_y = bsy * item.height_percent;
                         }
 
-                        out.push(self.layout_mirror_from_render(
-                            &item.mirror_id, mirror, &hybrid, viewport, gamma, eyezoom,
-                        ));
+                        if let Some(ml) = self.layout_mirror_from_render(
+                            &item.mirror_id, mirror, &hybrid, viewport, gamma, eyezoom, gs,
+                        ) {
+                            out.push(ml);
+                        }
                     }
                 }
             }
@@ -556,8 +593,9 @@ impl ModeSystem {
         viewport: &GameViewportGeometry,
         gamma: i32,
         eyezoom: Option<&EyeZoomLayout>,
-    ) -> MirrorLayout {
-        self.layout_mirror_from_render(mid, mirror, &mirror.output, viewport, gamma, eyezoom)
+        gui_scale: u32,
+    ) -> Option<MirrorLayout> {
+        self.layout_mirror_from_render(mid, mirror, &mirror.output, viewport, gamma, eyezoom, gui_scale)
     }
 
     fn layout_mirror_from_render(
@@ -568,7 +606,8 @@ impl ModeSystem {
         viewport: &GameViewportGeometry,
         gamma: i32,
         eyezoom: Option<&EyeZoomLayout>,
-    ) -> MirrorLayout {
+        gui_scale: u32,
+    ) -> Option<MirrorLayout> {
         let anchor = parse_relative_to(&render.relative_to);
 
         let (sx, sy) = if render.separate_scale {
@@ -588,17 +627,13 @@ impl ModeSystem {
             mirror.capture_height as f32 * sy
         };
 
-        // eyezoom_link overrides position and size from eyezoom layout
+        // eyezoom_link: position + size come from the eyezoom panel
         let (pos_x, pos_y, bw, bh) = if render.eyezoom_link {
             if let Some(ez) = eyezoom {
-                (ez.x, ez.y, ez.width, ez.height)
+                (ez.mirror_x, ez.mirror_y, ez.mirror_w, ez.mirror_h)
             } else {
-                let (ax, ay) = resolve_relative_position(
-                    anchor, render.x, render.y,
-                    self.screen_w as i32, self.screen_h as i32,
-                    viewport, base_w as i32, base_h as i32,
-                );
-                (ax as f32, ay as f32, base_w, base_h)
+                // no eyezoom active - nothing to link to, skip
+                return None;
             }
         } else if render.use_relative_position {
             let rx = viewport.final_x as f32 + viewport.final_w as f32 * render.relative_x;
@@ -609,6 +644,7 @@ impl ModeSystem {
                 anchor, render.x, render.y,
                 self.screen_w as i32, self.screen_h as i32,
                 viewport, base_w as i32, base_h as i32,
+                gui_scale, display_scale(),
             );
             (ax as f32, ay as f32, base_w, base_h)
         };
@@ -629,7 +665,7 @@ impl ModeSystem {
             0
         };
 
-        MirrorLayout {
+        Some(MirrorLayout {
             mirror_id: mid.to_string(),
             render_x: pos_x,
             render_y: pos_y,
@@ -665,7 +701,7 @@ impl ModeSystem {
             static_border_offset_x: mirror.border.static_offset_x as f32,
             static_border_offset_y: mirror.border.static_offset_y as f32,
             custom_shader: mirror.shader.clone(),
-        }
+        })
     }
 
     fn build_images(
@@ -676,6 +712,7 @@ impl ModeSystem {
         eyezoom: Option<&EyeZoomLayout>,
     ) -> Vec<ImageLayout> {
         let mut out = Vec::with_capacity(mode.image_ids.len());
+        let gs = config.display.game_gui_scale;
 
         for img_id in &mode.image_ids {
             let img = match find_image(config, img_id) {
@@ -685,17 +722,10 @@ impl ModeSystem {
 
             let (ax, ay, w, h) = if img.eyezoom_link {
                 if let Some(ez) = eyezoom {
-                    (ez.x, ez.y, ez.width, ez.height)
+                    (ez.mirror_x, ez.mirror_y, ez.mirror_w, ez.mirror_h)
                 } else {
-                    let anchor = parse_relative_to(&img.relative_to);
-                    let iw = if img.output_width > 0 { img.output_width } else { 0 };
-                    let ih = if img.output_height > 0 { img.output_height } else { 0 };
-                    let (ax, ay) = resolve_relative_position(
-                        anchor, img.x, img.y,
-                        self.screen_w as i32, self.screen_h as i32,
-                        viewport, iw, ih,
-                    );
-                    (ax as f32, ay as f32, 0.0, 0.0)
+                    // eyezoom isn't active, nothing to anchor to
+                    continue;
                 }
             } else {
                 let anchor = parse_relative_to(&img.relative_to);
@@ -704,7 +734,7 @@ impl ModeSystem {
                 let (ax, ay) = resolve_relative_position(
                     anchor, img.x, img.y,
                     self.screen_w as i32, self.screen_h as i32,
-                    viewport, iw, ih,
+                    viewport, iw, ih, gs, display_scale(),
                 );
                 (ax as f32, ay as f32, 0.0, 0.0)
             };
@@ -727,6 +757,7 @@ impl ModeSystem {
         viewport: &GameViewportGeometry,
     ) -> Vec<TextOverlayLayout> {
         let mut out = Vec::with_capacity(mode.text_overlay_ids.len());
+        let gs = config.display.game_gui_scale;
 
         for tid in &mode.text_overlay_ids {
             let tcfg = match find_text_overlay(config, tid) {
@@ -738,7 +769,7 @@ impl ModeSystem {
             let (ax, ay) = resolve_relative_position(
                 anchor, tcfg.x, tcfg.y,
                 self.screen_w as i32, self.screen_h as i32,
-                viewport, 0, 0,
+                viewport, 0, 0, gs, display_scale(),
             );
 
             out.push(TextOverlayLayout {
@@ -746,6 +777,60 @@ impl ModeSystem {
                 x: ax as f32,
                 y: ay as f32,
                 opacity: tcfg.opacity,
+            });
+        }
+
+        out
+    }
+
+    fn build_window_overlays(
+        &self,
+        config: &Config,
+        mode: &ModeConfig,
+        viewport: &GameViewportGeometry,
+    ) -> Vec<WindowOverlayLayout> {
+        let mut out = Vec::with_capacity(mode.window_overlay_ids.len());
+        let gs = config.display.game_gui_scale;
+
+        for woid in &mode.window_overlay_ids {
+            let wcfg = match find_window_overlay(config, woid) {
+                Some(w) => w,
+                None => continue,
+            };
+
+            let anchor = parse_relative_to(&wcfg.relative_to);
+            let (ax, ay) = resolve_relative_position(
+                anchor, wcfg.x, wcfg.y,
+                self.screen_w as i32, self.screen_h as i32,
+                viewport, 0, 0, gs, display_scale(),
+            );
+
+            let border = if wcfg.border.enabled {
+                Some(BorderLayout {
+                    x: ax as f32,
+                    y: ay as f32,
+                    width: 0.0,  // filled at render time from capture dimensions
+                    height: 0.0,
+                    border_width: wcfg.border.width as f32,
+                    radius: wcfg.border.radius as f32,
+                    color: wcfg.border.color.to_array(),
+                })
+            } else {
+                None
+            };
+
+            out.push(WindowOverlayLayout {
+                wo_id: woid.clone(),
+                x: ax as f32,
+                y: ay as f32,
+                scale: wcfg.scale,
+                opacity: wcfg.opacity,
+                crop_top: wcfg.crop_top,
+                crop_bottom: wcfg.crop_bottom,
+                crop_left: wcfg.crop_left,
+                crop_right: wcfg.crop_right,
+                pixelated_scaling: wcfg.pixelated_scaling,
+                border,
             });
         }
 
@@ -762,6 +847,7 @@ impl ModeSystem {
             mirrors: Vec::new(),
             images: Vec::new(),
             text_overlays: Vec::new(),
+            window_overlays: Vec::new(),
             border: None,
             eyezoom: None,
         }
@@ -815,17 +901,19 @@ fn build_eyezoom(
         return None;
     }
 
-    let zoom_w = space - 2 * ez.horizontal_margin;
+    // proportional margins (1/36 and 1/8 reproduce the old 40px/180px at 1440p)
+    let h_margin = screen_h as i32 / 36 + ez.horizontal_margin;
+    let v_margin = screen_h as i32 / 8 + ez.vertical_margin;
+
+    let zoom_w = space - 2 * h_margin;
     if zoom_w <= 20 {
         return None;
     }
 
-    let zoom_h = screen_h as i32 - 2 * ez.vertical_margin;
-    let min_h = (0.2 * screen_h as f64) as i32;
-    let zoom_h = zoom_h.max(min_h);
+    let zoom_h = (screen_h as i32 - 2 * v_margin).max((0.2 * screen_h as f64) as i32);
 
-    let zoom_x = ez.horizontal_margin as f32;
-    let zoom_y = ez.vertical_margin as f32;
+    let zoom_x = h_margin as f32;
+    let zoom_y = v_margin as f32;
 
     let tex_w = ez.window_width;
     let tex_h = ez.window_height;
@@ -848,11 +936,19 @@ fn build_eyezoom(
         ez.rect_height as f32
     };
 
+    // mirror rect - ratios reproduce the old 1440p layout (90, 480, 900, 500)
+    let sh = screen_h;
+    let mirror_x = sh / 16.0;
+    let mirror_y = sh / 3.0;
+    let mirror_w = sh * 5.0 / 8.0;
+    let mirror_h = sh * 25.0 / 72.0;
+
     Some(EyeZoomLayout {
         x: zoom_x,
         y: zoom_y,
         width: zoom_w as f32,
         height: zoom_h as f32,
+        mirror_x, mirror_y, mirror_w, mirror_h,
         src_x,
         src_y,
         src_w: total_clone,
@@ -898,6 +994,21 @@ fn find_image<'a>(config: &'a Config, name: &str) -> Option<&'a ImageConfig> {
 
 fn find_text_overlay<'a>(config: &'a Config, name: &str) -> Option<&'a TextOverlayConfig> {
     config.overlays.text_overlays.iter().find(|t| t.name == name)
+}
+
+fn find_window_overlay<'a>(config: &'a Config, name: &str) -> Option<&'a WindowOverlayConfig> {
+    config.overlays.window_overlays.iter().find(|w| w.name == name)
+}
+
+// macOS Retina: pie chart offsets must be scaled by content_scale
+pub fn display_scale() -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        let (sx, _) = unsafe { crate::viewport_hook::content_scale() };
+        sx
+    }
+    #[cfg(target_os = "linux")]
+    { 1.0 }
 }
 
 // --- RelativeTo parsing ---

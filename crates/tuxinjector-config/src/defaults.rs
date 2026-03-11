@@ -114,6 +114,7 @@ pub fn appearance_theme() -> String { "Purple".into() }
 pub fn custom_colors_empty() -> HashMap<String, Color> { HashMap::new() }
 pub fn gui_scale() -> f32 { 0.8 }
 
+pub fn game_gui_scale() -> u32 { 3 }
 pub fn config_version() -> i32 { 1 }
 pub fn default_mode() -> String { "Fullscreen".into() }
 

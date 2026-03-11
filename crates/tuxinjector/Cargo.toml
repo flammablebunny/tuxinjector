@@ -16,6 +16,7 @@ tuxinjector-gui = { workspace = true }
 tuxinjector-input = { workspace = true }
 tuxinjector-lua = { workspace = true }
 tuxinjector-plugin-api = { workspace = true }
+tuxinjector-capture = { workspace = true }
 libloading = { workspace = true }
 imgui = { workspace = true }
 imgui-glow-renderer = { workspace = true }

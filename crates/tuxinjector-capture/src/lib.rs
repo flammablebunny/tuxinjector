@@ -1,10 +1,13 @@
-// Capture backends - PipeWire on Wayland, X11 fallback.
+// Capture backends - PipeWire on Linux, CoreGraphics on macOS.
 // Everything funnels into CapturedFrame (RGBA pixels for GL upload).
 
-#[cfg(feature = "pipewire")]
+#[cfg(all(feature = "pipewire", target_os = "linux"))]
 pub mod pipewire_capture;
-#[cfg(feature = "pipewire")]
+#[cfg(all(feature = "pipewire", target_os = "linux"))]
 mod portal;
+
+#[cfg(target_os = "macos")]
+pub mod mac_capture;
 
 pub struct CapturedFrame {
     pub pixels: Vec<u8>,
@@ -13,7 +16,7 @@ pub struct CapturedFrame {
 }
 
 // just shells out to pw-cli to see if pipewire is alive
-#[cfg(feature = "pipewire")]
+#[cfg(all(feature = "pipewire", target_os = "linux"))]
 pub fn pipewire_available() -> bool {
     std::process::Command::new("pw-cli")
         .arg("info")
@@ -25,7 +28,17 @@ pub fn pipewire_available() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(feature = "pipewire"))]
+#[cfg(not(all(feature = "pipewire", target_os = "linux")))]
 pub fn pipewire_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+pub fn mac_capture_available() -> bool {
+    mac_capture::cg_available()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn mac_capture_available() -> bool {
     false
 }
