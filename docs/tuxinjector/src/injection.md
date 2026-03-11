@@ -1,12 +1,14 @@
-# Injection & Hooking <!-- TODO: Update ALL of this for MacOs Implementation -->
+# Injection & Hooking
 
-Tuxinjector uses `LD_PRELOAD` to inject directly into the game process before any game code runs. It works by hooking `dlsym` and `dlopen` to intercept symbol lookups, and also exports PLT-level overrides for GLFW stuff since LWJGL3 uses `RTLD_DEEPBIND` which would otherwise bypass our hooks. All of this gives us full control over GL rendering and input without touching any game files.
+Tuxinjector injects directly into the game process before any game code runs. On Linux it uses `LD_PRELOAD`, on macOS it uses `DYLD_INSERT_LIBRARIES`. It works by hooking `dlsym` to intercept symbol lookups, giving us full control over GL rendering and input without touching any game files.
 
 ---
 
 ## Interception Strategy
 
-Minecraft (LWJGL3) resolves its GL and GLFW functions through two different paths, and we have to handle both:
+Minecraft (LWJGL3) resolves its GL and GLFW functions through different paths depending on the platform, and we handle all of them:
+
+### Linux
 
 | Resolution Path | Used By | Interception Method |
 |----------------|---------|---------------------|
@@ -15,13 +17,23 @@ Minecraft (LWJGL3) resolves its GL and GLFW functions through two different path
 
 LWJGL3 loads `libglfw.so` with `RTLD_DEEPBIND`, which creates a private symbol scope that completely bypasses our `dlsym` hook. The workaround is exporting `#[no_mangle]` symbols at the PLT level, so the linker resolves those before `RTLD_DEEPBIND` can do anything about it.
 
+### macOS
+
+| Resolution Path | Used By | Interception Method |
+|----------------|---------|---------------------|
+| `dlsym(RTLD_DEFAULT, ...)` | GL/GLFW functions | `__DATA,__interpose` section in Mach-O binary |
+
+On macOS, `dlsym` itself is interposed via the `__DATA,__interpose` linker feature. This is a Mach-O mechanism where we declare a struct pairing our replacement function with the original - the dynamic linker patches all call sites at load time. Unlike PLT hooking on Linux, this works across all loaded images (frameworks, dylibs, the main executable) without needing to strip `RTLD_DEEPBIND` since that flag doesn't exist on macOS.
+
+The real `dlsym` pointer is read via `read_volatile` from the interpose struct to avoid recursion, since `__interpose` redirects ALL images including our own.
+
 ---
 
 ## dlsym Hook
 
-The core of everything is the `dlsym` hook. Since we've interposed `dlsym` itself, we need a way to call the *real* one without recursing into ourselves - `dlvsym` (versioned symbol lookup) handles that.
+The core of everything is the `dlsym` hook. Since we've interposed `dlsym` itself, we need a way to call the *real* one without recursing into ourselves.
 
-### Resolving the Real dlsym
+### Linux: Resolving the Real dlsym
 
 ```rust
 dlsym {
@@ -29,11 +41,21 @@ dlsym {
 }
 ```
 
-Tries `GLIBC_2.34` first, falls back to `GLIBC_2.2.5` for older glibc.
+Tries `GLIBC_2.34` first, falls back to `GLIBC_2.2.5` for older glibc. `dlvsym` (versioned symbol lookup) bypasses our hook since we only interposed the unversioned `dlsym`.
+
+### macOS: Resolving the Real dlsym
+
+```rust
+dlsym {
+    // Read from the __interpose struct via read_volatile
+    // The linker fills in the original pointer at load time
+    real_dlsym = read_volatile(addr_of!(INTERPOSE_DLSYM.original))
+}
+```
 
 ### Intercepted Symbols
 
-So when the game does `dlsym(handle, "eglSwapBuffers")`, our hook:
+When the game does `dlsym(handle, "eglSwapBuffers")`, our hook:
 
 1. Calls the real `dlsym` to get the actual function pointer
 2. Stashes that pointer in an `AtomicPtr` for later
@@ -48,18 +70,20 @@ dlsym("glViewport")  ->  stash real ptr  ->  return glViewport (viewport hook)
 ...
 ```
 
+On macOS, the swap hook intercepts `glfwSwapBuffers` instead of EGL/GLX swap functions (since macOS doesn't have EGL or GLX).
+
 Full list of everything we intercept:
 
 | Category | Symbols |
 |----------|---------|
-| **Swap** | `eglSwapBuffers`, `glXSwapBuffers`, `eglGetProcAddress`, `glXGetProcAddressARB` |
+| **Swap** | `eglSwapBuffers`, `glXSwapBuffers` (Linux); `glfwSwapBuffers` (macOS); `eglGetProcAddress`, `glXGetProcAddressARB` |
 | **GLFW callbacks** | `glfwSetKeyCallback`, `glfwSetMouseButtonCallback`, `glfwSetCursorPosCallback`, `glfwSetScrollCallback`, `glfwSetCharCallback`, `glfwSetCharModsCallback`, `glfwSetInputMode`, `glfwSetFramebufferSizeCallback` |
 | **GLFW polling** | `glfwGetKey`, `glfwGetMouseButton`, `glfwGetCursorPos`, `glfwGetFramebufferSize`, `glfwGetProcAddress` |
 | **GL functions** | `glViewport`, `glScissor`, `glBindFramebuffer` (+ EXT/ARB), `glDrawBuffer`, `glReadBuffer`, `glDrawBuffers`, `glBlitFramebuffer` |
 
 ---
 
-## dlopen Hook
+## dlopen Hook (Linux only)
 
 LWJGL3 loads its JNI libraries with `RTLD_DEEPBIND`, which would hide our PLT exports. Pretty simple fix - just strip `RTLD_DEEPBIND` from the flags before forwarding to the real `dlopen`:
 
@@ -71,9 +95,11 @@ dlopen(path, flags):
 
 Without `RTLD_DEEPBIND`, LWJGL3's GLFW JNI bindings resolve from the global namespace where our `#[no_mangle]` exports are.
 
+This isn't needed on macOS since `RTLD_DEEPBIND` doesn't exist there.
+
 ---
 
-## PLT-Level Exports
+## PLT-Level Exports (Linux only)
 
 GLFW functions that get resolved through direct PLT binding (not `dlsym`) need separate `#[no_mangle]` exports with the same name and ABI:
 
@@ -90,6 +116,8 @@ pub unsafe extern "C" fn glfwSetKeyCallback(
 ```
 
 Each export resolves the real function via `libc::dlsym(RTLD_NEXT, ...)` on first call, which also routes through our hooked `dlsym` to store the real pointer as a side-effect.
+
+On macOS, `__DATA,__interpose` handles all symbol interposition uniformly, so PLT exports aren't needed.
 
 ---
 
@@ -113,7 +141,7 @@ Covers `glViewport`, `glScissor`, `glBindFramebuffer` (and EXT/ARB variants), `g
 
 ---
 
-## Hook Chaining
+## Hook Chaining (Linux only)
 
 When multiple `LD_PRELOAD` libraries hook the same symbols, there are two forwarding modes:
 
@@ -131,8 +159,9 @@ Original function mode is preferred since it sidesteps compatibility issues with
 All the heavy init is deferred to the first frame, when the GL context is actually current. Before that point there's no GL context, so creating shaders/textures/FBOs would just fail.
 
 ```
-First eglSwapBuffers/glXSwapBuffers call:
-    1. Resolve GL function pointers via eglGetProcAddress/glXGetProcAddressARB
+First SwapBuffers call:
+    1. Resolve GL function pointers via eglGetProcAddress/glXGetProcAddressARB (Linux)
+       or glfwGetProcAddress (macOS)
     2. Create GlOverlayRenderer (compile shaders, allocate FBOs)
     3. Load config from ~/.config/tuxinjector/init.lua
     4. Register input handler with hotkey engine
@@ -140,6 +169,8 @@ First eglSwapBuffers/glXSwapBuffers call:
     6. Install inline glViewport/glBindFramebuffer hooks (runtime patching)
     7. INITIALIZED = true
 ```
+
+On macOS, the shader compilation step also patches all GLSL 300 ES shaders down to GLSL 1.20 at runtime (`in`/`out` -> `attribute`/`varying`, `texture()` -> `texture2D()`, etc.) since Apple's GL context is limited to 2.1.
 
 Every subsequent swap call checks `INITIALIZED` before rendering. If init fails, the game keeps running normally without the overlay.
 

@@ -7,11 +7,11 @@ it's done.
 ### Example
 
 ```lua
--- Press F3, wait 50ms, then press S (to open the pie chart)
-tx.bind("ctrl+P", function()
-    tx.press_key("F3")
-    tx.sleep(50)
-    tx.press_key("S")
+-- Show companion apps for 30 seconds then hide them again
+tx.bind("F3+C", function()
+    tx.toggle_app_visibility()
+    tx.sleep(30000)
+    tx.toggle_app_visibility()
 end)
 ```
 

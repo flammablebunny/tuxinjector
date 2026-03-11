@@ -9,14 +9,8 @@ one at a time.
 ### Example
 
 ```lua
--- Send F3+C to the game (copy coordinates)
-tx.bind("ctrl+C", function()
-    tx.press_key("F3")
-    tx.press_key("C")
-end)
-
--- Toggle F3 overlay
-tx.bind("ctrl+D", function()
+-- Rebind R to open the F3 debug screen
+tx.bind("R", function()
     tx.press_key("F3")
 end)
 ```

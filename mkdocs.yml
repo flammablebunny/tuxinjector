@@ -1,5 +1,5 @@
 site_name: Tuxinjector
-site_description: Minecraft speedrunning overlay for Linux - Pure Rust + OpenGL
+site_description: Minecraft speedrunning overlay for Linux & macOS - Rust + OpenGL
 docs_dir: docs/tuxinjector/src
 repo_url: https://github.com/flammablebunny/tuxinjector
 repo_name: flammablebunny/tuxinjector
@@ -72,3 +72,5 @@ nav:
     - tx.listen: api/tx_listen.md
     - tx.toggle_app_visibility: api/tx_toggle_app_visibility.md
     - Key Names: api/key_names.md
+  - Thanks:
+    - thanks.md

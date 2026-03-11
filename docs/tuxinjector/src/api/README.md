@@ -11,10 +11,16 @@ Lua before, these are good starting points:
 > system in various ways, such as spawning subprocesses. Read other people's code
 > and do not blindly copy and paste it into your own configuration. *cough* gore *cough*
 
+> [!WARNING]
+> Not everything you can do with tuxinjector's Lua API is legal for speedrun.com
+> submissions or MCSR Ranked. If you're unsure whether something is allowed,
+> check the rulebook or ask a mod before using it in runs you intend to submit.
+
 # Configuration
 
 By default, tuxinjector reads and executes a configuration file from
-`~/.config/tuxinjector/init.lua`.
+`~/.config/tuxinjector/init.lua`. Additional profiles are stored in
+`~/.config/tuxinjector/profiles/<name>.lua` and can be switched via the in-game GUI.
 
 The config file has to return a table with all the display, input, overlay,
 hotkey, and mode settings. You can also use the API module to register keybindings and call runtime functions:
@@ -38,7 +44,8 @@ return {
 
 # Hot reload
 
-Tuxinjector watches for changes to `init.lua` within the configuration directory.
-When it detects a change, it will automatically reload your configuration. The
-Lua VM is destroyed and recreated, so any state within will not be transferred
-to the new configuration.
+Tuxinjector watches for changes to any `.lua` file within the configuration
+directory (including profile files in `profiles/`). When it detects a change, it
+automatically reloads the currently active config - whether that's `init.lua` or
+a named profile. The Lua VM is destroyed and recreated, so any state within will
+not be transferred to the new configuration.

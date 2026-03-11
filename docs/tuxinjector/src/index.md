@@ -1,22 +1,23 @@
 # Introduction
 
-**Docs Version:** 1.0
-**Project:** Tuxinjector - Injection based minecraft speedrunning tool 
-**Stack:** Rust / OpenGL (GLSL 300 ES) / GLFW interception / Lua config / imgui-rs
+**Docs Version:** 1.1
+**Project:** Tuxinjector - Injection based minecraft speedrunning tool
+**Stack:** Rust / OpenGL (GLSL 300 ES on Linux, 1.20 on macOS) / GLFW interception / Lua config / imgui-rs
 
 ---
 
 ## What is Tuxinjector?
 
-Tuxinjector is a pure-Rust overlay which injects into Minecraft's rendering pipeline on Linux by using `LD_PRELOAD`. This makes it render directly in the game's OpenGL backbuffer, which easily provides real time resizing and overlays for speedrunning (Or just general use) without any external capture or compositing overhead.
-<!-- TODO: Update this for MacOs Implementation, which should be relatively soon. --> 
+Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.
+
 ## How It Works
 
-Tuxinjector is compiled into a shared object (`tuxinjector.so`) which gets loaded via `LD_PRELOAD` before the game starts. When the game's JVM calls `dlsym` to look up OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrapper functions. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
+Tuxinjector compiles to a shared library (`tuxinjector.so` on Linux, `tuxinjector.dylib` on macOS) that gets loaded before the game starts. When the JVM calls `dlsym` to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.
 
 ```
 Game launch:
-  LD_PRELOAD=tuxinjector.so minecraft
+  LD_PRELOAD=tuxinjector.so minecraft           # Linux
+  DYLD_INSERT_LIBRARIES=tuxinjector.dylib minecraft  # macOS
 
 1. Game's JVM loads -> dlsym("eglSwapBuffers") -> tuxinjector's hooked dlsym
 2. Hooked dlsym: stash real eglSwapBuffers, return hooked_egl_swap_buffers
@@ -27,23 +28,25 @@ Game launch:
 
 Input works the same way - `dlsym("glfwSetKeyCallback")` gets intercepted, the game's callback is stashed, and our wrapper gets installed instead. The wrapper handles hotkeys and key rebinds before forwarding events to the game.
 
+On macOS the hook mechanism is slightly different: `dlsym` itself is interposed via `__DATA,__interpose` (Mach-O linker feature) instead of PLT hooking, and GLSL shaders are patched down from 300 ES to 1.20 at runtime for Apple's GL 2.1 compatibility context.
+
 ---
 
 ## Crate Structure
 
-Tuxinjector is set up as a Rust workspace split up into 10 different crates. Splitting things up helps keep compile times low, and also makes it easier to isolate some of the unsafe GL stuff.
+Tuxinjector is set up as a Rust workspace split into 10 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
 
 | Crate | Purpose |
 |-------|---------|
-| `tuxinjector` | Main library: hooks, overlay state, mode system, plugin loader |
-| `tuxinjector-core` | Shared types: Color, geometry, lock-free primitives (RCU, SPSC) |
+| `tuxinjector` | Main library: hooks, overlay state, mode system, mirror capture, plugin loader |
+| `tuxinjector-core` | Shared types: Color, geometry, lock-free primitives (RCU) |
 | `tuxinjector-config` | Config types, Lua hot-reload, serde defaults |
 | `tuxinjector-input` | GLFW callback interception, key rebinding, sensitivity scaling |
-| `tuxinjector-render` | Shader pipeline, texture management, image loading |
+| `tuxinjector-render` | Image loading (PNG/JPEG/GIF animation) |
 | `tuxinjector-gl-interop` | Direct GL renderer, GL state save/restore, scene compositor |
 | `tuxinjector-gui` | imgui-rs settings UI (14 tabs), toast notifications |
 | `tuxinjector-lua` | Lua scripting runtime, hotkey actions, config loader |
-| `tuxinjector-capture` | Mirror capture (FBO readback, PBO async, zero-copy texture ref) |
+| `tuxinjector-capture` | Window overlay capture: PipeWire on Linux, CoreGraphics on macOS |
 | `tuxinjector-plugin-api` | C ABI plugin trait, `declare_plugin!` macro |
 
 The split isn't perfect yet - a couple things are probably in misleading places, but it works and thats all that really matters :)
@@ -52,8 +55,8 @@ The split isn't perfect yet - a couple things are probably in misleading places,
 
 ## Configuration
 
-Everything is configured through a single Lua file at `~/.config/tuxinjector/init.lua`. It returns a table with nested sub-configs:
-<!-- Does macos have this directory? --> 
+Everything is configured through Lua files in `~/.config/tuxinjector/` (same path on both Linux and macOS). The default config is `init.lua`, with additional profiles stored in `profiles/<name>.lua`. It returns a table with nested sub-configs:
+
 ```lua
 return {
     display = {
@@ -76,4 +79,4 @@ return {
 }
 ```
 
-Hot-reload is supported - editing `init.lua` while the game is running applies changes immediately without needing to restart.
+Hot-reload is supported - editing any config file (including profile files in `profiles/`) while the game is running applies changes immediately without needing to restart. Profiles can also be switched live through the in-game GUI.

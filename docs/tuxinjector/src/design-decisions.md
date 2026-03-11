@@ -1,14 +1,14 @@
 # Design Decisions
 
-This chapter explains a couple architectural decisions, and why i choose to do what i did.  
+This chapter explains a couple architectural decisions, and why i choose to do what i did.
 
 ---
 
-## Why LD_PRELOAD instead of ptrace?
+## Why LD_PRELOAD / DYLD_INSERT_LIBRARIES?
 
-`LD_PRELOAD` is the simplest injection mechanism on Linux. It loads tuxinjector's shared library into the game process before any game code runs, with no need for process attachment, memory writes, or elevated privileges.
+`LD_PRELOAD` (Linux) and `DYLD_INSERT_LIBRARIES` (macOS) are the simplest injection mechanisms on their respective platforms. They load tuxinjector's shared library into the game process before any game code runs, with no need for process attachment, memory writes, or elevated privileges.
 
-`ptrace` would let you attach to an already-running process, but it needs `CAP_SYS_PTRACE` or equivalent permissions, gets blocked by security modules (AppArmor, SELinux, Yama), and is way more complex to get right across different kernel versions. Since Minecraft is always launched from a script or launcher anyway, `LD_PRELOAD` can just be set at launch time with zero special permissions.
+`ptrace` would let you attach to an already-running process, but it needs `CAP_SYS_PTRACE` or equivalent permissions, gets blocked by security modules (AppArmor, SELinux, Yama), and is way more complex to get right across different kernel versions. Since Minecraft is always launched from a script or launcher anyway, the preload env var can just be set at launch time with zero special permissions.
 
 ---
 
@@ -16,9 +16,9 @@ This chapter explains a couple architectural decisions, and why i choose to do w
 
 GOT/PLT patching works by modifying the game's Global Offset Table in memory to redirect function calls. It works fine, but you end up needing to parse ELF headers at runtime, find the right GOT entry, and mess with memory pages that might be read-only (`mprotect`).
 
-`dlsym` interposition is way cleaner: we just export our own `dlsym` with `#[no_mangle]`, and the dynamic linker resolves it before `libdl.so`'s version. Every symbol lookup in the process flows through ours, including third-party libraries. None of the ELF parsing or `mprotect` headaches.
+`dlsym` interposition is way cleaner: on Linux we export our own `dlsym` with `#[no_mangle]`, and the dynamic linker resolves it before `libdl.so`'s version. On macOS we use `__DATA,__interpose`, a Mach-O linker feature that patches all call sites at load time. Either way, every symbol lookup in the process flows through ours, including third-party libraries. None of the ELF parsing or `mprotect` headaches.
 
-The one exception is `glfwGetProcAddress`, which is handled via PLT exports because LWJGL3's `RTLD_DEEPBIND` would bypass `dlsym` interception for symbols resolved through GLFW's own loader.
+The one exception on Linux is `glfwGetProcAddress`, which is handled via PLT exports because LWJGL3's `RTLD_DEEPBIND` would bypass `dlsym` interception for symbols resolved through GLFW's own loader. This isn't needed on macOS since `RTLD_DEEPBIND` doesn't exist there.
 
 ---
 
@@ -39,7 +39,7 @@ Not really sure how Vulkan interacts with other Drivers, but GL tends to be bett
 
 ---
 
-## Why PLT exports for GLFW?
+## Why PLT exports for GLFW? (Linux)
 
 LWJGL3 loads `libglfw.so` with `dlopen(..., RTLD_DEEPBIND)`. `RTLD_DEEPBIND` creates a private symbol scope where the loaded library resolves symbols from its own scope first, then global, which bypasses any `LD_PRELOAD` hooks.
 
@@ -52,3 +52,18 @@ So `dlsym` interception alone isn't enough for GLFW functions. The `#[no_mangle]
 
 So it's a dual-path thing: `dlsym` hook catches lookups made through `dlsym()`, and PLT exports catch the rest via direct dynamic linking.
 
+On macOS, none of this is needed - `__DATA,__interpose` handles all symbol interposition uniformly, and `RTLD_DEEPBIND` doesn't exist on Darwin.
+
+---
+
+## Why GLSL patching on macOS?
+
+Apple's OpenGL implementation is stuck at version 2.1 (compatibility context) or 4.1 (core context). Minecraft uses a compatibility context, so we're limited to GL 2.1 and GLSL 1.20. Rather than maintaining two separate shader sets, tuxinjector writes all shaders as GLSL 300 ES and patches them at runtime on macOS:
+
+- `#version 300 es` -> `#version 120` + `#extension GL_EXT_gpu_shader4`
+- `in`/`out` -> `attribute`/`varying`
+- `texture()` -> `texture2D()`
+- `FragColor` -> `gl_FragColor`
+- `textureSize()` -> `textureSize2D()`
+
+Ugly but it works, and it means all the shader code is in one place.

@@ -26,7 +26,7 @@ Every frame (inside hooked SwapBuffers):
 
 ## Shader Programs
 
-5 shader programs, all GLSL 300 ES for max driver compatibility (Mesa, NVIDIA, AMDGPU):
+5 shader programs, written as GLSL 300 ES and patched to GLSL 1.20 at runtime on macOS (Apple's GL 2.1 compatibility context):
 
 | Program | Vertex | Fragment | Used For |
 |---------|--------|----------|----------|
@@ -161,7 +161,7 @@ For oversized modes (resolution larger than the surface), the game's internal FB
 
 ## FPS Limiter
 
-Uses `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` for the bulk of the wait, then a spin-loop to absorb scheduler jitter:
+On Linux, uses `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` for the bulk of the wait, then a spin-loop to absorb scheduler jitter. On macOS, falls back to `thread_sleep` with equivalent logic:
 
 ```
 frame_limit(fps_limit, spin_threshold_us):
