@@ -1362,7 +1362,7 @@
 <p>On macOS the hook mechanism is slightly different: <code>dlsym</code> itself is interposed via <code>__DATA,__interpose</code> (Mach-O linker feature) instead of PLT hooking, and GLSL shaders are patched down from 300 ES to 1.20 at runtime for Apple's GL 2.1 compatibility context.</p>
 <hr />
 <h2 id="crate-structure">Crate Structure<a class="headerlink" href="#crate-structure" title="Permanent link">&para;</a></h2>
-<p>Tuxinjector is set up as a Rust workspace split into 10 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.</p>
+<p>Tuxinjector is set up as a Rust workspace split into 11 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.</p>
 <table>
 <thead>
 <tr>
@@ -1410,6 +1410,10 @@
 <tr>
 <td><code>tuxinjector-plugin-api</code></td>
 <td>C ABI plugin trait, <code>declare_plugin!</code> macro</td>
+</tr>
+<tr>
+<td><code>imgui-glow-renderer</code></td>
+<td>Local fork of imgui-glow-renderer with GLSL 1.20 shader path for macOS GL 2.1</td>
 </tr>
 </tbody>
 </table>
