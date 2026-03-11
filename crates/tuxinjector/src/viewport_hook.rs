@@ -1,7 +1,9 @@
 // EGL/GLX window resize hooks -- shadows wl_egl_window_create/resize,
 // glViewport, glBindFramebuffer, etc. to control game rendering dimensions.
 
-use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void};
+#[cfg(target_os = "linux")]
+use std::ffi::{c_long, c_ulong};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
@@ -39,22 +41,34 @@ const GL_BACK_LEFT: u32 = 0x0402;
 const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
 
 // X11/GLX path (when GAME_EGL_WINDOW is null)
+#[cfg(target_os = "linux")]
 type GlxGetCurrentDisplayFn = unsafe extern "C" fn() -> *mut c_void;
+#[cfg(target_os = "linux")]
 type GlfwGetX11WindowFn     = unsafe extern "C" fn(*mut c_void) -> c_ulong;
+#[cfg(target_os = "linux")]
 type XResizeWindowFn        = unsafe extern "C" fn(*mut c_void, c_ulong, c_uint, c_uint) -> c_int;
+#[cfg(target_os = "linux")]
 type XSyncFn                = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
+#[cfg(target_os = "linux")]
 type XFlushFn               = unsafe extern "C" fn(*mut c_void) -> c_int;
+#[cfg(target_os = "linux")]
 type XInternAtomFn          = unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> c_ulong;
+#[cfg(target_os = "linux")]
 type XSendEventFn           = unsafe extern "C" fn(*mut c_void, c_ulong, c_int, c_long, *const c_void) -> c_int;
+#[cfg(target_os = "linux")]
 type XDefaultRootWindowFn   = unsafe extern "C" fn(*mut c_void) -> c_ulong;
 // GLFW window management (borderless toggle)
 type GlfwSetWindowAttribFn  = unsafe extern "C" fn(*mut c_void, c_int, c_int);
+#[cfg(target_os = "linux")]
 type GlfwSetWindowSizeFn    = unsafe extern "C" fn(*mut c_void, c_int, c_int);
+#[cfg(target_os = "linux")]
 type GlfwSetWindowPosFn     = unsafe extern "C" fn(*mut c_void, c_int, c_int);
 type GlfwGetWindowPosFn     = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int);
 type GlfwGetWindowSizeFn    = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int);
+#[cfg(target_os = "linux")]
 type GlfwGetPrimaryMonitorFn = unsafe extern "C" fn() -> *mut c_void;
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct GlfwVidMode {
     width: c_int,
@@ -65,34 +79,112 @@ struct GlfwVidMode {
     refresh_rate: c_int,
 }
 
+#[cfg(target_os = "linux")]
 type GlfwGetVideoModeFn     = unsafe extern "C" fn(*mut c_void) -> *const GlfwVidMode;
 
 const GLFW_DECORATED: c_int = 0x00020005;
+
+// --- macOS Cocoa FFI for borderless toggle ---
+
+#[cfg(target_os = "macos")]
+type GlfwGetCocoaWindowFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+#[cfg(target_os = "macos")]
+type ObjcGetClassFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+#[cfg(target_os = "macos")]
+type SelRegisterNameFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+
+// ARM64 can't just shove structs through variadic C calls, so we
+// transmute objc_msgSend to the exact signature each call needs.
+#[cfg(target_os = "macos")]
+type MsgSendSetU64 = unsafe extern "C" fn(*mut c_void, *mut c_void, u64);
+#[cfg(target_os = "macos")]
+type MsgSendGetU64 = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u64;
+#[cfg(target_os = "macos")]
+type MsgSendGetPtr = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+#[cfg(target_os = "macos")]
+type MsgSendSetFrameDisplay = unsafe extern "C" fn(*mut c_void, *mut c_void, NSRect, i8);
+#[cfg(target_os = "macos")]
+#[cfg(target_arch = "aarch64")]
+type MsgSendGetRect = unsafe extern "C" fn(*mut c_void, *mut c_void) -> NSRect;
+#[cfg(target_os = "macos")]
+#[cfg(target_arch = "x86_64")]
+type MsgSendStretGetRect = unsafe extern "C" fn(*mut NSRect, *mut c_void, *mut c_void);
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSPoint { x: f64, y: f64 }
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSSize { width: f64, height: f64 }
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSRect { origin: NSPoint, size: NSSize }
 
 // --- Cached real function pointers (resolved once) ---
 
 static REAL_WL_EGL_WINDOW_CREATE: OnceLock<Option<WlEglWindowCreateFn>> = OnceLock::new();
 static REAL_WL_EGL_WINDOW_RESIZE: OnceLock<Option<WlEglWindowResizeFn>> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
 static REAL_GLX_GET_CURRENT_DISPLAY: OnceLock<Option<GlxGetCurrentDisplayFn>> = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_GLFW_GET_X11_WINDOW:     OnceLock<Option<GlfwGetX11WindowFn>>     = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_RESIZE_WINDOW:         OnceLock<Option<XResizeWindowFn>>        = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_SYNC:                  OnceLock<Option<XSyncFn>>                = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_FLUSH:                 OnceLock<Option<XFlushFn>>               = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_INTERN_ATOM:           OnceLock<Option<XInternAtomFn>>          = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_SEND_EVENT:            OnceLock<Option<XSendEventFn>>           = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_X_DEFAULT_ROOT_WINDOW:   OnceLock<Option<XDefaultRootWindowFn>>   = OnceLock::new();
 static REAL_GLFW_SET_WINDOW_ATTRIB:  OnceLock<Option<GlfwSetWindowAttribFn>>  = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_GLFW_SET_WINDOW_SIZE:    OnceLock<Option<GlfwSetWindowSizeFn>>    = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_GLFW_SET_WINDOW_POS:     OnceLock<Option<GlfwSetWindowPosFn>>     = OnceLock::new();
 static REAL_GLFW_GET_WINDOW_POS:     OnceLock<Option<GlfwGetWindowPosFn>>     = OnceLock::new();
 static REAL_GLFW_GET_WINDOW_SIZE:    OnceLock<Option<GlfwGetWindowSizeFn>>    = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_GLFW_GET_PRIMARY_MONITOR: OnceLock<Option<GlfwGetPrimaryMonitorFn>> = OnceLock::new();
+#[cfg(target_os = "linux")]
 static REAL_GLFW_GET_VIDEO_MODE:     OnceLock<Option<GlfwGetVideoModeFn>>     = OnceLock::new();
 
 static BORDERLESS_ACTIVE: AtomicBool = AtomicBool::new(false);
 static BORDERLESS_TOGGLE_PENDING: AtomicBool = AtomicBool::new(false);
 static SAVED_WINDOW_GEOM: std::sync::Mutex<Option<(i32, i32, u32, u32)>> = std::sync::Mutex::new(None);
+
+// SAFETY: these are fn ptrs cached once at init, never written again
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct SendPtr(*mut c_void);
+#[cfg(target_os = "macos")]
+unsafe impl Send for SendPtr {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for SendPtr {}
+
+#[cfg(target_os = "macos")]
+static REAL_GLFW_GET_COCOA_WINDOW: OnceLock<Option<GlfwGetCocoaWindowFn>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static OBJC_MSG_SEND_PTR: OnceLock<SendPtr> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static OBJC_GET_CLASS_FN: OnceLock<Option<ObjcGetClassFn>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static SEL_REGISTER_NAME_FN: OnceLock<Option<SelRegisterNameFn>> = OnceLock::new();
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+static OBJC_MSG_SEND_STRET_PTR: OnceLock<SendPtr> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static SAVED_MACOS_STYLE_MASK: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+#[cfg(target_os = "macos")]
+static SAVED_MACOS_FRAME: std::sync::Mutex<Option<NSRect>> = std::sync::Mutex::new(None);
+#[cfg(target_os = "macos")]
+static SAVED_MACOS_PRESENTATION: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
 
 fn get_real_wl_egl_window_create() -> Option<WlEglWindowCreateFn> {
     *REAL_WL_EGL_WINDOW_CREATE.get_or_init(|| {
@@ -121,6 +213,7 @@ fn get_real_wl_egl_window_resize() -> Option<WlEglWindowResizeFn> {
 // --- X11/GLX resolver helpers ---
 
 /// Try RTLD_DEFAULT then dlopen a list of libs. Handles are leaked on purpose.
+#[cfg(target_os = "linux")]
 pub(crate) unsafe fn dlopen_find(libs: &[&[u8]], sym: &[u8]) -> *mut c_void {
     let ptr = libc::dlsym(libc::RTLD_DEFAULT, sym.as_ptr() as *const libc::c_char);
     if !ptr.is_null() {
@@ -138,6 +231,7 @@ pub(crate) unsafe fn dlopen_find(libs: &[&[u8]], sym: &[u8]) -> *mut c_void {
     std::ptr::null_mut()
 }
 
+#[cfg(target_os = "linux")]
 fn find_lib_paths_by_substring(sub: &str) -> Vec<std::ffi::CString> {
     let mut out = Vec::new();
     let maps = match std::fs::read_to_string("/proc/self/maps") {
@@ -161,6 +255,7 @@ fn find_lib_paths_by_substring(sub: &str) -> Vec<std::ffi::CString> {
 
 // check if an address lives inside our .so (i.e. us)
 // cargo can produce either "libtuxinjector.so" or "tuxinjector.so"
+#[cfg(target_os = "linux")]
 fn is_own_library(addr: usize) -> bool {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
@@ -178,6 +273,7 @@ fn is_own_library(addr: usize) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
 unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
     // use real_dlsym (via dlvsym) to bypass our own dlsym hook -
     // libc::dlsym goes through our #[no_mangle] dlsym which stores
@@ -231,6 +327,7 @@ unsafe fn resolve_gl_sym(sym: &[u8], self_addr: usize) -> *mut u8 {
     std::ptr::null_mut()
 }
 
+#[cfg(target_os = "linux")]
 fn get_glx_current_display() -> Option<GlxGetCurrentDisplayFn> {
     *REAL_GLX_GET_CURRENT_DISPLAY.get_or_init(|| unsafe {
         let ptr = dlopen_find(
@@ -247,6 +344,7 @@ fn get_glx_current_display() -> Option<GlxGetCurrentDisplayFn> {
 }
 
 // LWJGL loads GLFW with RTLD_LOCAL so we have to find it by scanning /proc/self/maps
+#[cfg(target_os = "linux")]
 fn find_glfw_lib_path() -> Option<std::ffi::CString> {
     let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
     for line in maps.lines() {
@@ -261,6 +359,7 @@ fn find_glfw_lib_path() -> Option<std::ffi::CString> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn get_glfw_get_x11_window() -> Option<GlfwGetX11WindowFn> {
     *REAL_GLFW_GET_X11_WINDOW.get_or_init(|| unsafe {
         let mut ptr = libc::dlsym(
@@ -286,6 +385,7 @@ fn get_glfw_get_x11_window() -> Option<GlfwGetX11WindowFn> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn get_x_resize_window() -> Option<XResizeWindowFn> {
     *REAL_X_RESIZE_WINDOW.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XResizeWindow\0");
@@ -294,6 +394,7 @@ fn get_x_resize_window() -> Option<XResizeWindowFn> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn get_x_sync() -> Option<XSyncFn> {
     *REAL_X_SYNC.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XSync\0");
@@ -302,24 +403,28 @@ fn get_x_sync() -> Option<XSyncFn> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn get_x_flush() -> Option<XFlushFn> {
     *REAL_X_FLUSH.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XFlush\0");
         if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
     })
 }
+#[cfg(target_os = "linux")]
 fn get_x_intern_atom() -> Option<XInternAtomFn> {
     *REAL_X_INTERN_ATOM.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XInternAtom\0");
         if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
     })
 }
+#[cfg(target_os = "linux")]
 fn get_x_send_event() -> Option<XSendEventFn> {
     *REAL_X_SEND_EVENT.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XSendEvent\0");
         if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
     })
 }
+#[cfg(target_os = "linux")]
 fn get_x_default_root_window() -> Option<XDefaultRootWindowFn> {
     *REAL_X_DEFAULT_ROOT_WINDOW.get_or_init(|| unsafe {
         let ptr = dlopen_find(&[b"libX11.so.6\0", b"libX11.so\0"], b"XDefaultRootWindow\0");
@@ -335,6 +440,8 @@ unsafe fn resolve_glfw_sym<T: Copy>(sym: &[u8], lock: &OnceLock<Option<T>>) -> O
         if !ptr.is_null() {
             return Some(std::mem::transmute_copy(&ptr));
         }
+        // Linux fallback: LWJGL loads GLFW with RTLD_LOCAL, scan /proc/self/maps
+        #[cfg(target_os = "linux")]
         if let Some(cs) = find_glfw_lib_path() {
             let handle = libc::dlopen(cs.as_ptr(), libc::RTLD_LAZY);
             if !handle.is_null() {
@@ -352,9 +459,11 @@ unsafe fn resolve_glfw_sym<T: Copy>(sym: &[u8], lock: &OnceLock<Option<T>>) -> O
 fn get_glfw_set_window_attrib() -> Option<GlfwSetWindowAttribFn> {
     unsafe { resolve_glfw_sym(b"glfwSetWindowAttrib\0", &REAL_GLFW_SET_WINDOW_ATTRIB) }
 }
+#[cfg(target_os = "linux")]
 fn get_glfw_set_window_size() -> Option<GlfwSetWindowSizeFn> {
     unsafe { resolve_glfw_sym(b"glfwSetWindowSize\0", &REAL_GLFW_SET_WINDOW_SIZE) }
 }
+#[cfg(target_os = "linux")]
 fn get_glfw_set_window_pos() -> Option<GlfwSetWindowPosFn> {
     unsafe { resolve_glfw_sym(b"glfwSetWindowPos\0", &REAL_GLFW_SET_WINDOW_POS) }
 }
@@ -364,19 +473,110 @@ fn get_glfw_get_window_pos() -> Option<GlfwGetWindowPosFn> {
 fn get_glfw_get_window_size() -> Option<GlfwGetWindowSizeFn> {
     unsafe { resolve_glfw_sym(b"glfwGetWindowSize\0", &REAL_GLFW_GET_WINDOW_SIZE) }
 }
+#[cfg(target_os = "linux")]
 fn get_glfw_get_primary_monitor() -> Option<GlfwGetPrimaryMonitorFn> {
     unsafe { resolve_glfw_sym(b"glfwGetPrimaryMonitor\0", &REAL_GLFW_GET_PRIMARY_MONITOR) }
 }
+#[cfg(target_os = "linux")]
 fn get_glfw_get_video_mode() -> Option<GlfwGetVideoModeFn> {
     unsafe { resolve_glfw_sym(b"glfwGetVideoMode\0", &REAL_GLFW_GET_VIDEO_MODE) }
 }
 
-/// Request borderless toggle (deferred to swap hook via poll_borderless_toggle)
+// --- macOS: objc runtime plumbing ---
+
+#[cfg(target_os = "macos")]
+fn get_glfw_get_cocoa_window() -> Option<GlfwGetCocoaWindowFn> {
+    unsafe { resolve_glfw_sym(b"glfwGetCocoaWindow\0", &REAL_GLFW_GET_COCOA_WINDOW) }
+}
+
+#[cfg(target_os = "macos")]
+fn get_objc_msg_send() -> *mut c_void {
+    OBJC_MSG_SEND_PTR.get_or_init(|| unsafe {
+        SendPtr(libc::dlsym(libc::RTLD_DEFAULT, b"objc_msgSend\0".as_ptr() as *const libc::c_char))
+    }).0
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn get_objc_msg_send_stret() -> *mut c_void {
+    OBJC_MSG_SEND_STRET_PTR.get_or_init(|| unsafe {
+        SendPtr(libc::dlsym(libc::RTLD_DEFAULT, b"objc_msgSend_stret\0".as_ptr() as *const libc::c_char))
+    }).0
+}
+
+#[cfg(target_os = "macos")]
+fn get_objc_get_class() -> Option<ObjcGetClassFn> {
+    *OBJC_GET_CLASS_FN.get_or_init(|| unsafe {
+        let ptr = libc::dlsym(libc::RTLD_DEFAULT, b"objc_getClass\0".as_ptr() as *const libc::c_char);
+        if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn get_sel_register_name() -> Option<SelRegisterNameFn> {
+    *SEL_REGISTER_NAME_FN.get_or_init(|| unsafe {
+        let ptr = libc::dlsym(libc::RTLD_DEFAULT, b"sel_registerName\0".as_ptr() as *const libc::c_char);
+        if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
+    })
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn sel(name: &[u8]) -> *mut c_void {
+    get_sel_register_name().unwrap()(name.as_ptr() as *const c_char)
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn msg_get_ptr(obj: *mut c_void, sel_name: &[u8]) -> *mut c_void {
+    let send: MsgSendGetPtr = std::mem::transmute(get_objc_msg_send());
+    send(obj, sel(sel_name))
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn msg_get_u64(obj: *mut c_void, sel_name: &[u8]) -> u64 {
+    let send: MsgSendGetU64 = std::mem::transmute(get_objc_msg_send());
+    send(obj, sel(sel_name))
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn msg_set_u64(obj: *mut c_void, sel_name: &[u8], val: u64) {
+    let send: MsgSendSetU64 = std::mem::transmute(get_objc_msg_send());
+    send(obj, sel(sel_name), val);
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn get_ns_app() -> *mut c_void {
+    let cls = get_objc_get_class().unwrap()(b"NSApplication\0".as_ptr() as *const c_char);
+    msg_get_ptr(cls, b"sharedApplication\0")
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn get_ns_rect(obj: *mut c_void, sel_name: &[u8]) -> NSRect {
+    let s = sel(sel_name);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let send: MsgSendGetRect = std::mem::transmute(get_objc_msg_send());
+        send(obj, s)
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let stret: MsgSendStretGetRect = std::mem::transmute(get_objc_msg_send_stret());
+        let mut rect = std::mem::zeroed::<NSRect>();
+        stret(&mut rect, obj, s);
+        rect
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn set_ns_frame(obj: *mut c_void, frame: NSRect) {
+    let send: MsgSendSetFrameDisplay = std::mem::transmute(get_objc_msg_send());
+    send(obj, sel(b"setFrame:display:\0"), frame, 1);
+}
+
+// defer to swap hook - can't mess with the window while we're inside glfwPollEvents
 pub fn request_borderless_toggle() {
     BORDERLESS_TOGGLE_PENDING.store(true, Ordering::Release);
 }
 
-/// Execute pending borderless toggle (called from swap hook, outside glfwPollEvents)
+// check if a toggle was queued and do it
 pub unsafe fn poll_borderless_toggle() {
     if BORDERLESS_TOGGLE_PENDING.compare_exchange(
         true, false, Ordering::AcqRel, Ordering::Relaxed,
@@ -387,6 +587,7 @@ pub unsafe fn poll_borderless_toggle() {
 
 // Uses waywall's trick: send a dummy 1x1 resize first so GLFW actually
 // processes the size change and fires Minecraft's framebuffer callback.
+#[cfg(target_os = "linux")]
 unsafe fn do_toggle_borderless() {
     let glfw_win = GAME_WINDOW.load(Ordering::Acquire);
     if glfw_win.is_null() {
@@ -459,6 +660,113 @@ unsafe fn do_toggle_borderless() {
     BORDERLESS_ACTIVE.store(!was_borderless, Ordering::Relaxed);
 }
 
+// macOS: rip off the title bar, hide dock + menu bar, stretch window to fill screen
+#[cfg(target_os = "macos")]
+unsafe fn do_toggle_borderless() {
+    let glfw_win = GAME_WINDOW.load(Ordering::Acquire);
+    if glfw_win.is_null() {
+        tracing::warn!("toggle_borderless: GLFW window not stored yet");
+        return;
+    }
+
+    let Some(set_attrib) = get_glfw_set_window_attrib() else { return };
+    let Some(get_pos)    = get_glfw_get_window_pos()    else { return };
+    let Some(get_size)   = get_glfw_get_window_size()   else { return };
+    let Some(get_cocoa)  = get_glfw_get_cocoa_window()  else {
+        tracing::warn!("toggle_borderless: glfwGetCocoaWindow not found");
+        return;
+    };
+
+    if get_objc_msg_send().is_null() || get_sel_register_name().is_none() || get_objc_get_class().is_none() {
+        tracing::warn!("toggle_borderless: objc runtime not available");
+        return;
+    }
+
+    let ns_window = get_cocoa(glfw_win);
+    if ns_window.is_null() {
+        tracing::warn!("toggle_borderless: glfwGetCocoaWindow returned null");
+        return;
+    }
+
+    let was_borderless = BORDERLESS_ACTIVE.load(Ordering::Relaxed);
+
+    if !was_borderless {
+        // save geometry so we can put it back when they exit borderless
+        let (mut x, mut y) = (0i32, 0i32);
+        let (mut w, mut h) = (0i32, 0i32);
+        get_pos(glfw_win, &mut x, &mut y);
+        get_size(glfw_win, &mut w, &mut h);
+        tracing::info!(x, y, w, h, "toggle_borderless: saved geometry");
+        *SAVED_WINDOW_GEOM.lock().unwrap() = Some((x, y, w as u32, h as u32));
+
+        // save the native cocoa stuff we're about to stomp on
+        *SAVED_MACOS_STYLE_MASK.lock().unwrap() = Some(msg_get_u64(ns_window, b"styleMask\0"));
+        *SAVED_MACOS_FRAME.lock().unwrap() = Some(get_ns_rect(ns_window, b"frame\0"));
+        let ns_app = get_ns_app();
+        *SAVED_MACOS_PRESENTATION.lock().unwrap() = Some(msg_get_u64(ns_app, b"presentationOptions\0"));
+
+        // kill the title bar
+        set_attrib(glfw_win, GLFW_DECORATED, 0);
+        msg_set_u64(ns_window, b"setStyleMask:\0", 0); // NSBorderlessWindowMask
+
+        // grab the full screen rect (including where the menu bar lives)
+        let screen = msg_get_ptr(ns_window, b"screen\0");
+        let screen_frame = get_ns_rect(screen, b"frame\0");
+
+        set_ns_frame(ns_window, screen_frame);
+
+        // shove dock + menu bar out of the way (AutoHideDock|AutoHideMenuBar)
+        msg_set_u64(ns_app, b"setPresentationOptions:\0", 1 | 4);
+
+        // float above menu bar so it doesn't peek through
+        msg_set_u64(ns_window, b"setLevel:\0", 3);
+
+        // tell GLFW about the size change (retina: pixels != points)
+        let (sx, sy) = content_scale();
+        let fb_w = (screen_frame.size.width as f32 * sx) as c_int;
+        let fb_h = (screen_frame.size.height as f32 * sy) as c_int;
+        fire_borderless_fb_cb(glfw_win, fb_w, fb_h);
+
+        tracing::info!(
+            w = screen_frame.size.width, h = screen_frame.size.height,
+            fb_w, fb_h, "toggle_borderless: entered borderless (macOS)"
+        );
+    } else {
+        let ns_app = get_ns_app();
+
+        // bring the dock and menu bar back
+        if let Some(opts) = SAVED_MACOS_PRESENTATION.lock().unwrap().take() {
+            msg_set_u64(ns_app, b"setPresentationOptions:\0", opts);
+        }
+
+        // back to normal window level
+        msg_set_u64(ns_window, b"setLevel:\0", 0); // NSNormalWindowLevel
+
+        // restore title bar
+        if let Some(mask) = SAVED_MACOS_STYLE_MASK.lock().unwrap().take() {
+            msg_set_u64(ns_window, b"setStyleMask:\0", mask);
+        }
+
+        // let GLFW know too
+        set_attrib(glfw_win, GLFW_DECORATED, 1);
+
+        // put window back where it was
+        if let Some(frame) = SAVED_MACOS_FRAME.lock().unwrap().take() {
+            set_ns_frame(ns_window, frame);
+        }
+
+        // poke the fb callback so MC re-renders at the old size
+        if let Some((_x, _y, w, h)) = SAVED_WINDOW_GEOM.lock().unwrap().take() {
+            fire_borderless_fb_cb(glfw_win, w as c_int, h as c_int);
+            tracing::info!(w, h, "toggle_borderless: restored geometry (macOS)");
+        }
+
+        tracing::info!("toggle_borderless: exited borderless (macOS)");
+    }
+
+    BORDERLESS_ACTIVE.store(!was_borderless, Ordering::Relaxed);
+}
+
 unsafe fn fire_borderless_fb_cb(glfw_win: *mut c_void, w: c_int, h: c_int) {
     let cb_ptr = GAME_FB_SIZE_CB.load(Ordering::Acquire);
     if !cb_ptr.is_null() {
@@ -470,6 +778,7 @@ unsafe fn fire_borderless_fb_cb(glfw_win: *mut c_void, w: c_int, h: c_int) {
 // Set/unset _NET_WM_STATE_FULLSCREEN via X11 client message.
 // This tells Hyprland/XWayland to hide bars without going through GLFW's
 // own fullscreen path (which would fight with our resize hooks).
+#[cfg(target_os = "linux")]
 unsafe fn set_x11_fullscreen_state(fullscreen: bool) {
     let Some(get_dpy) = get_glx_current_display()   else { return };
     let Some(get_win) = get_glfw_get_x11_window()   else { return };
@@ -520,6 +829,7 @@ unsafe fn set_x11_fullscreen_state(fullscreen: bool) {
     tracing::debug!(fullscreen, x11_win, "set _NET_WM_STATE_FULLSCREEN");
 }
 
+#[cfg(target_os = "linux")]
 unsafe fn try_x11_window_resize(mode_w: u32, mode_h: u32, orig_w: u32, orig_h: u32) {
     let Some(get_dpy)  = get_glx_current_display()  else {
         tracing::warn!("x11_resize: glXGetCurrentDisplay not found");
@@ -563,6 +873,13 @@ unsafe fn try_x11_window_resize(mode_w: u32, mode_h: u32, orig_w: u32, orig_h: u
     tracing::info!(new_w, new_h, x11_win, ret, "XResizeWindow done");
 }
 
+// macOS no-op: glfwSetWindowSize in fullscreen causes a resize-then-snap-back
+// that clobbers our mode dims. Viewport hook + border clearing are enough.
+#[cfg(target_os = "macos")]
+unsafe fn try_glfw_window_resize(_mode_w: u32, _mode_h: u32, _orig_w: u32, _orig_h: u32) {
+    // no-op on purpose
+}
+
 #[allow(dead_code)]
 pub fn is_glx_path() -> bool {
     GAME_EGL_WINDOW.load(Ordering::Acquire).is_null()
@@ -570,6 +887,34 @@ pub fn is_glx_path() -> bool {
 
 pub fn is_gl_viewport_hooked() -> bool {
     GL_VIEWPORT_SEEN.load(Ordering::Relaxed)
+}
+
+// Retina scale factor (fb pixels / window points), cached once
+pub unsafe fn content_scale() -> (f32, f32) {
+    static CACHED: OnceLock<(f32, f32)> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let glfw_win = GAME_WINDOW.load(Ordering::Acquire);
+        if glfw_win.is_null() { return (1.0, 1.0); }
+
+        // gotta use the real glfwGetFramebufferSize, not our hooked one
+        let real_get_fb = REAL_GET_FB_SIZE.load(Ordering::Acquire);
+        if real_get_fb.is_null() { return (1.0, 1.0); }
+        let get_fb: GlfwGetFbSizeFn = std::mem::transmute(real_get_fb);
+        let (mut fw, mut fh) = (0i32, 0i32);
+        get_fb(glfw_win, &mut fw, &mut fh);
+
+        let Some(get_win_size) = get_glfw_get_window_size() else { return (1.0, 1.0) };
+        let (mut ww, mut wh) = (0i32, 0i32);
+        get_win_size(glfw_win, &mut ww, &mut wh);
+
+        if fw <= 0 || fh <= 0 || ww <= 0 || wh <= 0 { return (1.0, 1.0); }
+
+        let sx = fw as f32 / ww as f32;
+        let sy = fh as f32 / wh as f32;
+        tracing::info!(sx, sy, fb_w = fw, fb_h = fh, win_w = ww, win_h = wh,
+            "content_scale cached");
+        (sx, sy)
+    })
 }
 
 // --- Captured game state ---
@@ -668,7 +1013,13 @@ static REAL_GL_GET_INTEGERV: OnceLock<Option<GlGetIntegervFn>> = OnceLock::new()
 
 fn get_gl_get_integerv() -> Option<GlGetIntegervFn> {
     *REAL_GL_GET_INTEGERV.get_or_init(|| unsafe {
-        let ptr = libc::dlsym(libc::RTLD_NEXT, b"glGetIntegerv\0".as_ptr() as *const libc::c_char);
+        let name = b"glGetIntegerv\0".as_ptr() as *const libc::c_char;
+        // RTLD_NEXT works on Linux (Mesa), but on macOS GL lives in
+        // OpenGL.framework which is only visible through RTLD_DEFAULT
+        #[cfg(target_os = "macos")]
+        let ptr = libc::dlsym(libc::RTLD_DEFAULT, name);
+        #[cfg(target_os = "linux")]
+        let ptr = libc::dlsym(libc::RTLD_NEXT, name);
         if ptr.is_null() { None } else { Some(std::mem::transmute(ptr)) }
     })
 }
@@ -772,6 +1123,7 @@ lazy_gl_resolve!(get_real_gl_bind_framebuffer_ext, REAL_GL_BIND_FRAMEBUFFER_EXT,
 lazy_gl_resolve!(get_real_gl_bind_framebuffer_arb, REAL_GL_BIND_FRAMEBUFFER_ARB, b"glBindFramebufferARB\0", GlBindFramebufferFn);
 
 // Mesa dispatch stub detection: [endbr64] mov rax,[fs:0] ; jmp [rax+imm]
+#[cfg(target_os = "linux")]
 fn looks_like_dispatch_stub(bytes: &[u8]) -> bool {
     if bytes.len() < 12 { return false; }
     let mut i = 0usize;
@@ -812,6 +1164,7 @@ unsafe fn bind_fb_with(real: GlBindFramebufferFn, target: c_uint, fb: c_uint) {
 }
 
 /// Inline-patch Mesa's glViewport with a 12-byte absolute jmp to our hook
+#[cfg(target_os = "linux")]
 pub unsafe fn install_glviewport_inline_hook() {
     if REAL_GL_VIEWPORT_COPY.get().is_some() { return; }
 
@@ -900,7 +1253,8 @@ pub unsafe fn install_glviewport_inline_hook() {
     let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
     let page = (real_mesa as usize) & !(page_sz - 1);
     if libc::mprotect(page as *mut c_void, page_sz, libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0 {
-        tracing::warn!(target = ?real_mesa, errno = *libc::__errno_location(), "glViewport hook: mprotect failed");
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        tracing::warn!(target = ?real_mesa, errno, "glViewport hook: mprotect failed");
     }
     tracing::warn!(real_mesa = ?real_mesa, hook = ?hook_addr, "glViewport hook: writing 12-byte patch");
     std::ptr::copy_nonoverlapping(patch.as_ptr(), real_mesa, 12);
@@ -914,6 +1268,7 @@ pub unsafe fn install_glviewport_inline_hook() {
 }
 
 /// Same technique for glBindFramebuffer
+#[cfg(target_os = "linux")]
 pub unsafe fn install_glbindframebuffer_inline_hook() {
     if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_some() { return; }
 
@@ -1001,12 +1356,28 @@ pub unsafe extern "C" fn hooked_gl_viewport(x: c_int, y: c_int, w: c_int, h: c_i
             && (orig_w != mode_w || orig_h != mode_h)
             && x == 0 && y == 0 && w == mode_w && h == mode_h
         {
-            // undersized: center within physical surface
-            let cx = (orig_w - mode_w) / 2;
-            let cy = (orig_h - mode_h) / 2;
-            tracing::trace!(x, y, w, h, mode_w, mode_h, orig_w, orig_h, cx, cy,
-                "hooked_gl_viewport: centering");
-            (cx, cy, w, h)
+            // only center on FBO 0 (the backbuffer). Sodium's FBOs match
+            // mode_w x mode_h exactly, so centering those shoves the
+            // viewport off the edge and you get a black frame.
+            let draw_fbo = get_gl_get_integerv().map(|f| {
+                let mut out: c_int = -1;
+                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
+                out
+            });
+            if draw_fbo == Some(0) {
+                let cx = (orig_w - mode_w) / 2;
+                let cy = (orig_h - mode_h) / 2;
+                static CENTER_LOG: std::sync::Once = std::sync::Once::new();
+                CENTER_LOG.call_once(|| {
+                    tracing::info!(x, y, w, h, mode_w, mode_h, orig_w, orig_h, cx, cy,
+                        "hooked_gl_viewport: centering FBO0 (first)");
+                });
+                (cx, cy, w, h)
+            } else {
+                tracing::trace!(x, y, w, h, draw_fbo = ?draw_fbo,
+                    "hooked_gl_viewport: undersized custom FBO pass-through");
+                (x, y, w, h)
+            }
         } else if mode_w > 0 && mode_h > 0 && oversized
             && orig_h > 0
             && x == 0 && y == 0 && w == mode_w && h == mode_h
@@ -1067,9 +1438,19 @@ pub unsafe extern "C" fn hooked_gl_scissor(x: c_int, y: c_int, w: c_int, h: c_in
             && (orig_w != mode_w || orig_h != mode_h)
             && x == 0 && y == 0 && w == mode_w && h == mode_h
         {
-            let cx = (orig_w - mode_w) / 2;
-            let cy = (orig_h - mode_h) / 2;
-            (cx, cy)
+            // same FBO 0 check as viewport -- Sodium's FBOs don't need offsetting
+            let draw_fbo = get_gl_get_integerv().map(|f| {
+                let mut out: c_int = -1;
+                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
+                out
+            });
+            if draw_fbo == Some(0) {
+                let cx = (orig_w - mode_w) / 2;
+                let cy = (orig_h - mode_h) / 2;
+                (cx, cy)
+            } else {
+                (x, y)
+            }
         } else if mode_w > 0 && mode_h > 0 && oversized
             && orig_h > 0
             && x == 0 && y == 0 && w == mode_w && h == mode_h
@@ -1470,20 +1851,32 @@ pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
                 real_resize(egl_win, orig_w as c_int, orig_h as c_int, 0, 0);
             }
         } else {
-            // GLX path: resize for non-oversized modes
-            if !is_oversized(mode_w, mode_h, orig_w, orig_h) {
-                try_x11_window_resize(mode_w, mode_h, orig_w, orig_h);
+            #[cfg(target_os = "linux")]
+            {
+                // GLX path: resize X11 window for non-oversized modes
+                if !is_oversized(mode_w, mode_h, orig_w, orig_h) {
+                    try_x11_window_resize(mode_w, mode_h, orig_w, orig_h);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // no X11 on macOS, goes through GLFW (or just no-ops)
+                try_glfw_window_resize(mode_w, mode_h, orig_w, orig_h);
             }
         }
     }
 
     let oversized = is_oversized(mode_w, mode_h, orig_w, orig_h);
     if let Some(gl) = crate::state::get().gl.get() {
-        if !is_gl_viewport_hooked() {
-            install_glviewport_inline_hook();
-        }
-        if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_none() {
-            install_glbindframebuffer_inline_hook();
+        // inline-patch Mesa GL fns so LWJGL3+RTLD_DEEPBIND hits our hooks (Linux x86_64 only)
+        #[cfg(target_os = "linux")]
+        {
+            if !is_gl_viewport_hooked() {
+                install_glviewport_inline_hook();
+            }
+            if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_none() {
+                install_glbindframebuffer_inline_hook();
+            }
         }
         if oversized {
             crate::virtual_fb::ensure_offscreen(gl, mode_w, mode_h);
@@ -1520,7 +1913,39 @@ pub unsafe extern "C" fn hooked_glfw_set_framebuffer_size_callback(
     let real = REAL_SET_FB_SIZE_CB.load(Ordering::Acquire);
     if real.is_null() { return None; }
     let real_fn: GlfwSetFbSizeCbFn = std::mem::transmute(real);
+    // macOS: intercept OS resize events (e.g. fullscreen restore) so they
+    // don't clobber our mode. Register our wrapper instead of the game's.
+    #[cfg(target_os = "macos")]
+    { return real_fn(window, Some(glfw_fb_size_wrapper)); }
+    #[cfg(target_os = "linux")]
     real_fn(window, callback)
+}
+
+// If a mode is active, absorb the resize silently. No mode = pass through.
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn glfw_fb_size_wrapper(window: *mut c_void, w: c_int, h: c_int) {
+    let (mw, mh) = unpack(MODE_DIMS.load(Ordering::Acquire));
+    let wu = w as u32;
+    let hu = h as u32;
+
+    if mw > 0 && mh > 0 {
+        // mode active -- update orig dims but don't let MC see the real size
+        let (ow, oh) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
+        if wu != ow || hu != oh {
+            ORIGINAL_DIMS.store(pack(wu, hu), Ordering::Release);
+            tracing::info!(w, h, mw, mh,
+                "glfw_fb_size_wrapper: absorbed resize, updated orig, keeping mode");
+        }
+        return;
+    }
+
+    // no mode -- forward to game and update our orig dims
+    force_store_original_size(wu, hu);
+    let cb_ptr = GAME_FB_SIZE_CB.load(Ordering::Acquire);
+    if !cb_ptr.is_null() {
+        let cb: GlfwFbSizeCb = std::mem::transmute(cb_ptr);
+        cb(window, w, h);
+    }
 }
 
 // --- Hooked glfwGetFramebufferSize ---
