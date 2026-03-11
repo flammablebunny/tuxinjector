@@ -12,11 +12,13 @@ struct RebindEntry {
 }
 
 impl RebindEntry {
-    fn target(&self, in_chat: bool) -> i32 {
+    fn target(&self, in_chat: bool) -> Option<i32> {
         if in_chat && self.to_chat != 0 {
-            self.to_chat
+            Some(self.to_chat)
+        } else if self.to_game != 0 {
+            Some(self.to_game)
         } else {
-            self.to_game
+            None // no valid target for current mode
         }
     }
 }
@@ -42,7 +44,7 @@ impl KeyRebinder {
         self.entries.clear();
 
         for r in &config.rebinds {
-            if r.enabled && r.from_key != 0 && r.to_key != 0 {
+            if r.enabled && r.from_key != 0 && (r.to_key != 0 || r.to_key_chat != 0) {
                 self.entries.push(RebindEntry {
                     from: r.from_key as i32,
                     to_game: r.to_key as i32,
@@ -77,7 +79,7 @@ impl KeyRebinder {
         self.entries
             .iter()
             .find(|e| e.from == key || (scancode > 0 && e.from == sc_key))
-            .map(|e| e.target(self.in_chat))
+            .and_then(|e| e.target(self.in_chat))
             .unwrap_or(key)
     }
 
@@ -88,7 +90,7 @@ impl KeyRebinder {
         }
         self.entries
             .iter()
-            .find(|e| e.target(self.in_chat) == key)
+            .find(|e| e.target(self.in_chat) == Some(key))
             .map(|e| e.from)
             .unwrap_or(key)
     }
@@ -102,7 +104,7 @@ impl KeyRebinder {
         if self.on {
             self.entries
                 .iter()
-                .map(|e| (e.from, e.target(self.in_chat)))
+                .filter_map(|e| e.target(self.in_chat).map(|t| (e.from, t)))
                 .collect()
         } else {
             Vec::new()
@@ -239,6 +241,40 @@ mod tests {
         assert_eq!(rb.remap_key(65, 0), 65); // old rule gone
         assert_eq!(rb.remap_key(80, 0), 81); // new rule
         assert_eq!(rb.remap_key(90, 0), 90); // disabled rule not loaded
+    }
+
+    #[test]
+    fn chat_only_rebind_passes_through_in_game() {
+        let mut rb = KeyRebinder::new();
+        rb.on = true;
+        // to_game = 0, to_chat = 345 (RCtrl) - chat-only rebind
+        rb.entries.push(mk_split(65, 0, 345));
+
+        // in game mode: no valid target = passes through original key
+        assert_eq!(rb.remap_key(65, 0), 65);
+
+        // in chat mode: remaps to RCtrl
+        rb.set_game_state("inworld,cursor_free");
+        assert_eq!(rb.remap_key(65, 0), 345);
+    }
+
+    #[test]
+    fn chat_only_rebind_loads_from_config() {
+        let mut rb = KeyRebinder::new();
+        let config = KeyRebindsConfig {
+            enabled: true,
+            rebinds: vec![KeyRebind {
+                from_key: 65,
+                to_key: 0,
+                to_key_chat: 345,
+                enabled: true,
+            }],
+        };
+        rb.update_from_config(&config);
+        assert_eq!(rb.entries.len(), 1); // must not be skipped
+
+        rb.set_game_state("inworld,cursor_free");
+        assert_eq!(rb.remap_key(65, 0), 345);
     }
 
     #[test]
