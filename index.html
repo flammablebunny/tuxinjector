@@ -1347,9 +1347,9 @@
 <h2 id="what-is-tuxinjector">What is Tuxinjector?<a class="headerlink" href="#what-is-tuxinjector" title="Permanent link">&para;</a></h2>
 <p>Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses <code>LD_PRELOAD</code> (Linux) or <code>DYLD_INSERT_LIBRARIES</code> (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.</p>
 <h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Tuxinjector compiles to a shared library (<code>tuxinjector.so</code> on Linux, <code>tuxinjector.dylib</code> on macOS) that gets loaded before the game starts. When the JVM calls <code>dlsym</code> to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.</p>
+<p>Tuxinjector compiles to a per-architecture shared library on Linux (e.g. <code>tuxinjector_x64.so</code>, <code>tuxinjector_aarch64.so</code>) or a universal binary on macOS (<code>tuxinjector.dylib</code>) that gets loaded before the game starts. When the JVM calls <code>dlsym</code> to resolve OpenGL and GLFW functions, tuxinjector intercepts those lookups and returns its own wrappers. The wrappers stash the real function pointers and add overlay logic before/after forwarding to the originals.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Game launch:
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  LD_PRELOAD=tuxinjector.so minecraft           # Linux
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  LD_PRELOAD=tuxinjector_x64.so minecraft        # Linux
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  DYLD_INSERT_LIBRARIES=tuxinjector.dylib minecraft  # macOS
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>1. Game&#39;s JVM loads -&gt; dlsym(&quot;eglSwapBuffers&quot;) -&gt; tuxinjector&#39;s hooked dlsym

@@ -1470,8 +1470,12 @@
 <h3 id="linux">Linux<a class="headerlink" href="#linux" title="Permanent link">&para;</a></h3>
 <p>When installing Tux Injector, it is recommended to put the library at a permanent path, such as <code>~/.local/share/tuxinjector</code>. You can also download the latest release and move the binary there manually.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>~/.local/share/tuxinjector
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>curl<span class="w"> </span>-fL<span class="w"> </span>https://github.com/flammablebunny/tuxinjector/releases/latest/download/tuxinjector.so<span class="w"> </span>-o<span class="w"> </span>~/.local/share/tuxinjector/tuxinjector.so
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>curl<span class="w"> </span>-fL<span class="w"> </span>https://github.com/flammablebunny/tuxinjector/releases/latest/download/tuxinjector_x64.so<span class="w"> </span>-o<span class="w"> </span>~/.local/share/tuxinjector/tuxinjector_x64.so
 </code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>Not on x86_64? Replace <code>x64</code> in the curl command and filename with <code>aarch64</code>, <code>aarch32</code>, or <code>x86</code> depending on your system architecture.</p>
+</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>NixOS users should skip this and follow the <a href="#nixos">NixOS</a> section below instead.</p>
@@ -1498,7 +1502,7 @@
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Linux</label><label for="__tabbed_1_2">macOS</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>env LD_PRELOAD=$HOME/.local/share/tuxinjector/tuxinjector.so
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>env LD_PRELOAD=$HOME/.local/share/tuxinjector/tuxinjector_x64.so
 </code></pre></div>
 </div>
 <div class="tabbed-block">
