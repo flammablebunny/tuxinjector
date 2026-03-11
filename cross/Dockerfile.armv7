@@ -1,0 +1,40 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Step 1: Install i686 cross-compiler for LuaJIT HOST_CC (needs 32-bit host tools)
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y \
+        gcc-i686-linux-gnu \
+        libc6-dev-i386-cross && \
+    rm -rf /var/lib/apt/lists/*
+
+# Step 2: Add armhf architecture and install cross toolchain + target libs
+RUN dpkg --add-architecture armhf && \
+    sed -i 's/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list && \
+    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y \
+        curl \
+        make \
+        pkg-config \
+        clang \
+        libclang-dev \
+        gcc-arm-linux-gnueabihf \
+        g++-arm-linux-gnueabihf \
+        libc6-dev-armhf-cross \
+        libpipewire-0.3-dev:armhf \
+        libspa-0.2-dev:armhf \
+        libdbus-1-dev:armhf \
+        libx11-dev:armhf && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+    CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc \
+    CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++ \
+    HOST_CC=i686-linux-gnu-gcc \
+    PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig \
+    PKG_CONFIG_ALLOW_CROSS=1

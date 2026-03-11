@@ -1,0 +1,53 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+      build_run_id:
+        description: "Build workflow run ID (from the Actions tab URL)"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts from build run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Print checksums
+        run: cat artifacts/*/*.sha512 | sort
+
+      - name: Create tag
+        run: |
+          git tag ${{ github.event.inputs.tag }}
+          git push origin ${{ github.event.inputs.tag }}
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.event.inputs.tag }} \
+            --title "${{ github.event.inputs.tag }}" \
+            --generate-notes \
+            artifacts/tuxinjector_x64/tuxinjector_x64.so \
+            artifacts/tuxinjector_aarch64/tuxinjector_aarch64.so \
+            artifacts/tuxinjector_x86/tuxinjector_x86.so \
+            artifacts/tuxinjector_aarch32/tuxinjector_aarch32.so \
+            artifacts/tuxinjector_macos/tuxinjector.dylib \
+            artifacts/checksums-sha512/checksums-sha512.txt

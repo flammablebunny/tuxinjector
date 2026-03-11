@@ -67,6 +67,7 @@ tuxinjector-plugin-api = { path = "crates/tuxinjector-plugin-api" }
 
 [patch.crates-io]
 imgui-glow-renderer = { path = "crates/imgui-glow-renderer" }
+libspa = { path = "crates/libspa" }
 
 [profile.release]
 lto = "thin"

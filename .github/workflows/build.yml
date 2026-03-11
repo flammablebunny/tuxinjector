@@ -1,0 +1,134 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux-native:
+    strategy:
+      matrix:
+        include:
+          - suffix: x64
+            runner: ubuntu-latest
+          - suffix: aarch64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libclang-dev clang \
+            libpipewire-0.3-dev libspa-0.2-dev libdbus-1-dev libx11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cargo build --release
+          mv target/release/libtuxinjector.so tuxinjector_${{ matrix.suffix }}.so
+
+      - name: Generate SHA-512 checksum
+        run: sha512sum tuxinjector_${{ matrix.suffix }}.so > tuxinjector_${{ matrix.suffix }}.so.sha512
+
+      - name: Print checksum
+        run: cat tuxinjector_${{ matrix.suffix }}.so.sha512
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuxinjector_${{ matrix.suffix }}
+          path: |
+            tuxinjector_${{ matrix.suffix }}.so
+            tuxinjector_${{ matrix.suffix }}.so.sha512
+
+  build-linux-cross:
+    strategy:
+      matrix:
+        include:
+          - suffix: x86
+            target: i686-unknown-linux-gnu
+            dockerfile: cross/Dockerfile.i686
+          - suffix: aarch32
+            target: armv7-unknown-linux-gnueabihf
+            dockerfile: cross/Dockerfile.armv7
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t tuxinjector-cross-${{ matrix.suffix }} -f ${{ matrix.dockerfile }} .
+
+      - name: Build in container
+        run: |
+          docker run --rm \
+            -v "$PWD":/src \
+            -w /src \
+            tuxinjector-cross-${{ matrix.suffix }} \
+            bash -c "
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target ${{ matrix.target }} && \
+              . \$HOME/.cargo/env && \
+              rustup target add ${{ matrix.target }} && \
+              cargo build --release --target ${{ matrix.target }} && \
+              cp target/${{ matrix.target }}/release/libtuxinjector.so /src/tuxinjector_${{ matrix.suffix }}.so
+            "
+
+      - name: Generate SHA-512 checksum
+        run: sha512sum tuxinjector_${{ matrix.suffix }}.so > tuxinjector_${{ matrix.suffix }}.so.sha512
+
+      - name: Print checksum
+        run: cat tuxinjector_${{ matrix.suffix }}.so.sha512
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuxinjector_${{ matrix.suffix }}
+          path: |
+            tuxinjector_${{ matrix.suffix }}.so
+            tuxinjector_${{ matrix.suffix }}.so.sha512
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cargo build --release
+          mv target/release/libtuxinjector.dylib tuxinjector.dylib
+
+      - name: Generate SHA-512 checksum
+        run: shasum -a 512 tuxinjector.dylib > tuxinjector.dylib.sha512
+
+      - name: Print checksum
+        run: cat tuxinjector.dylib.sha512
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuxinjector_macos
+          path: |
+            tuxinjector.dylib
+            tuxinjector.dylib.sha512
+
+  checksums:
+    needs: [build-linux-native, build-linux-cross, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect checksums
+        run: |
+          cat artifacts/*/*.sha512 | sort > checksums-sha512.txt
+          echo "## SHA-512 Checksums" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat checksums-sha512.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums-sha512
+          path: checksums-sha512.txt
