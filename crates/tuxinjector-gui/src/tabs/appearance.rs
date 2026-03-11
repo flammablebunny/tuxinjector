@@ -32,19 +32,6 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
         ui.text_disabled(desc);
     }
 
-    // -- GUI scale slider --
-    ui.dummy([0.0, 12.0]);
-    ui.separator();
-    ui.text("GUI Scale");
-    ui.dummy([0.0, 4.0]);
-    ui.text("Scale:");
-    ui.same_line();
-    ui.set_next_item_width(200.0);
-    if crate::widgets::slider_float(ui, "##gui_scale", &mut config.theme.appearance.gui_scale, 0.75, 2.5, "%.2f")
-    {
-        *dirty = true;
-    }
-
     // -- Custom color overrides --
     ui.dummy([0.0, 12.0]);
     ui.separator();
@@ -88,6 +75,29 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
             .custom_colors
             .insert(name, tuxinjector_core::Color::WHITE);
         *dirty = true;
+    }
+
+    // -- game gui scale (affects pie chart positioning) --
+    ui.dummy([0.0, 16.0]);
+    ui.separator();
+    ui.text("Game GUI Scale");
+    ui.text_disabled("Minecraft GUI scale - affects pie chart anchor offsets.");
+    ui.dummy([0.0, 4.0]);
+    ui.text("Scale:");
+    ui.same_line();
+    ui.set_next_item_width(120.0);
+    let cur_gs = config.display.game_gui_scale.to_string();
+    if let Some(_token) = ui.begin_combo("##game_gui_scale", &cur_gs) {
+        for scale in 1u32..=8 {
+            let lbl = scale.to_string();
+            if ui.selectable_config(&lbl)
+                .selected(config.display.game_gui_scale == scale)
+                .build()
+            {
+                config.display.game_gui_scale = scale;
+                *dirty = true;
+            }
+        }
     }
 
     // -- Mirror gamma --

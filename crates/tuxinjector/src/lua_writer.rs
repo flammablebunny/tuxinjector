@@ -82,6 +82,36 @@ pub fn rename_profile(config_dir: &Path, old: &str, new: &str) {
     }
 }
 
+// --- Active profile tracking ---
+
+// Persists which profile is active across restarts.
+// Empty string = default profile (init.lua).
+pub fn save_active_profile(config_dir: &Path, name: &str) {
+    let path = config_dir.join("active_profile.txt");
+    if let Err(e) = std::fs::write(&path, name) {
+        tracing::warn!(path = %path.display(), error = %e, "failed to save active profile");
+    }
+}
+
+pub fn load_active_profile(config_dir: &Path) -> String {
+    let path = config_dir.join("active_profile.txt");
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+// Save the config to the correct file based on profile.
+// Default profile -> init.lua, named profile -> profiles/<name>.lua.
+// NEVER writes a named profile's content to init.lua.
+pub fn save_current_config(cfg: &Config, config_dir: &Path) {
+    if cfg.profile.is_empty() {
+        write_lua_config(cfg, &config_dir.join("init.lua"));
+    } else {
+        save_profile(cfg, config_dir, &cfg.profile);
+    }
+}
+
 // --- Preamble extraction ---
 
 // grabs everything before the first line starting with `return`

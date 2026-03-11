@@ -158,13 +158,20 @@ pub fn text_wrapped_colored(ui: &Ui, color: [f32; 4], text: &str) {
 // Falls back to fc-list on NixOS where fonts live in the nix store.
 pub fn discover_fonts() -> Vec<(String, String)> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let search_dirs: Vec<String> = vec![
+    #[allow(unused_mut)]
+    let mut search_dirs: Vec<String> = vec![
         "/usr/share/fonts".into(),
         "/usr/local/share/fonts".into(),
         format!("{home}/.local/share/fonts"),
         "/run/current-system/sw/share/fonts".into(),
         format!("{home}/.nix-profile/share/fonts"),
     ];
+    #[cfg(target_os = "macos")]
+    {
+        search_dirs.push("/Library/Fonts".into());
+        search_dirs.push("/System/Library/Fonts".into());
+        search_dirs.push(format!("{home}/Library/Fonts"));
+    }
 
     let mut fonts: Vec<(String, String)> = Vec::new();
     for dir in &search_dirs {

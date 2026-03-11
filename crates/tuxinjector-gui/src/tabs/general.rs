@@ -204,6 +204,14 @@ pub fn render(
         }
     }
 
+    ui.text("GUI Scale:");
+    ui.same_line();
+    ui.set_next_item_width(200.0);
+    if crate::widgets::slider_float(ui, "##gui_scale", &mut config.theme.appearance.gui_scale, 0.75, 2.5, "%.2f")
+    {
+        *dirty = true;
+    }
+
     ui.dummy([0.0, 8.0]);
     if ui.checkbox("Disable All Animations", &mut config.display.disable_animations) {
         *dirty = true;

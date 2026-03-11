@@ -2,6 +2,8 @@
 //
 // Watches the config file (or the whole config dir for Lua require() support)
 // and re-parses on changes, publishing the new snapshot through RCU.
+// Supports profile switching: checks active_profile.txt to determine which
+// file to re-read on change.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +30,22 @@ pub struct ConfigWatcher {
     watch_all: bool,
     // NOTE: kept alive so the watcher doesn't get dropped
     _watcher: Option<RecommendedWatcher>,
+}
+
+// Check active_profile.txt to figure out which config file to reload.
+// Falls back to init.lua if no profile is set.
+fn resolve_active_config_path(config_dir: &std::path::Path, default_path: &std::path::Path) -> PathBuf {
+    let profile_marker = config_dir.join("active_profile.txt");
+    if let Ok(name) = std::fs::read_to_string(&profile_marker) {
+        let name = name.trim();
+        if !name.is_empty() {
+            let profile_path = config_dir.join("profiles").join(format!("{name}.lua"));
+            if profile_path.exists() {
+                return profile_path;
+            }
+        }
+    }
+    default_path.to_path_buf()
 }
 
 impl ConfigWatcher {
@@ -67,7 +85,8 @@ impl ConfigWatcher {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
+        // Recursive so we also catch profile file changes in profiles/
+        watcher.watch(&watch_dir, RecursiveMode::Recursive)?;
 
         info!("Config watcher started for {}", path.display());
 
@@ -75,6 +94,8 @@ impl ConfigWatcher {
             .file_name()
             .map(|n| n.to_os_string())
             .unwrap_or_default();
+
+        let config_dir = watch_dir.clone();
 
         std::thread::Builder::new()
             .name("config-watcher".into())
@@ -119,16 +140,19 @@ impl ConfigWatcher {
                     }
                     last_reload = now;
 
-                    // always re-eval the entry point, even when a helper module changed
-                    match std::fs::read_to_string(&path) {
+                    // Resolve which file to read: check active_profile.txt so that
+                    // after a GUI profile switch, we re-read the correct file.
+                    let active_path = resolve_active_config_path(&config_dir, &path);
+
+                    match std::fs::read_to_string(&active_path) {
                         Ok(src) => match parser(&src) {
                             Ok(cfg) => {
-                                info!("Config reloaded from {}", path.display());
+                                info!("Config reloaded from {}", active_path.display());
                                 snap.publish(cfg);
                             }
                             Err(e) => error!("Failed to parse config: {e}"),
                         },
-                        Err(e) => error!("Failed to read config file: {e}"),
+                        Err(e) => error!("Failed to read config file {}: {e}", active_path.display()),
                     }
                 }
 

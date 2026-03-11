@@ -122,14 +122,29 @@ pub fn init_config() -> Option<ConfigWatcher> {
         let _ = tx.config_dir.set(dir.to_path_buf());
     }
 
-    match std::fs::read_to_string(&path) {
-        Ok(src) => {
-            boot_lua(tx, &snapshot, &path, &src);
+    // Check if there's an active profile to load instead of init.lua
+    let load_path = if let Some(dir) = path.parent() {
+        let active = crate::lua_writer::load_active_profile(dir);
+        if !active.is_empty() {
+            if let Some(src) = crate::lua_writer::load_profile_source(dir, &active) {
+                let profile_path = dir.join("profiles").join(format!("{active}.lua"));
+                tracing::info!(profile = %active, "loading active profile");
+                boot_lua(tx, &snapshot, &profile_path, &src, &active);
+                profile_path
+            } else {
+                tracing::warn!(profile = %active, "active profile file not found, falling back to default");
+                crate::lua_writer::save_active_profile(dir, "");
+                load_default(tx, &snapshot, &path);
+                path.clone()
+            }
+        } else {
+            load_default(tx, &snapshot, &path);
+            path.clone()
         }
-        Err(e) => {
-            tracing::error!(path = %path.display(), error = %e, "failed to read config, using defaults");
-        }
-    }
+    } else {
+        load_default(tx, &snapshot, &path);
+        path.clone()
+    };
 
     // watcher uses a Lua-delegating parser for hot-reload
     let parser: tuxinjector_config::ConfigParser = Box::new(|source: &str| {
@@ -151,7 +166,8 @@ pub fn init_config() -> Option<ConfigWatcher> {
         Ok(cfg)
     });
 
-    match ConfigWatcher::new(path.clone(), snapshot, parser) {
+    // Watch the active config file (profile or init.lua)
+    match ConfigWatcher::new(load_path, snapshot, parser) {
         Ok(mut watcher) => {
             // watch all .lua files so require()'d modules also trigger reload
             watcher.set_watch_all_files(true);
@@ -168,19 +184,35 @@ pub fn init_config() -> Option<ConfigWatcher> {
     }
 }
 
+fn load_default(
+    tx: &'static state::TuxinjectorState,
+    snapshot: &Arc<tuxinjector_config::ConfigSnapshot>,
+    path: &PathBuf,
+) {
+    match std::fs::read_to_string(path) {
+        Ok(src) => boot_lua(tx, snapshot, path, &src, ""),
+        Err(e) => {
+            tracing::error!(path = %path.display(), error = %e, "failed to read config, using defaults");
+        }
+    }
+}
+
 // spawn Lua runtime, publish initial config, stash bindings
 fn boot_lua(
     tx: &'static state::TuxinjectorState,
     snapshot: &Arc<tuxinjector_config::ConfigSnapshot>,
     path: &PathBuf,
     source: &str,
+    profile: &str,
 ) {
     match tuxinjector_lua::LuaRuntime::spawn(source.to_string()) {
         Ok((runtime, update)) => {
-            let cfg = update.config;
+            let mut cfg = update.config;
+            cfg.profile = profile.to_string();
 
             tracing::info!(
                 path = %path.display(),
+                profile = profile,
                 modes = cfg.modes.len(),
                 mirrors = cfg.overlays.mirrors.len(),
                 images = cfg.overlays.images.len(),
@@ -209,3 +241,4 @@ fn boot_lua(
         }
     }
 }
+

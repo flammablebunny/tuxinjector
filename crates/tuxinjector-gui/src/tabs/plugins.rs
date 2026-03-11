@@ -304,10 +304,13 @@ pub fn render(ui: &imgui::Ui, state: &mut PluginsState) {
     }
 
     ui.separator(); ui.text("Plugins");
-    ui.text(
-        "Download and manage overlay plugins. \
-         Plugins are stored in ~/.local/share/tuxinjector/plugins/.",
-    );
+    #[cfg(target_os = "macos")]
+    let plugins_help = "Download and manage overlay plugins. \
+         Plugins are stored in ~/.config/tuxinjector/plugins/.";
+    #[cfg(target_os = "linux")]
+    let plugins_help = "Download and manage overlay plugins. \
+         Plugins are stored in ~/.local/share/tuxinjector/plugins/.";
+    ui.text(plugins_help);
     ui.dummy([0.0, 8.0]);
     ui.separator();
     ui.dummy([0.0, 4.0]);

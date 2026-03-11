@@ -340,14 +340,12 @@ impl GuiRenderer {
         }
 
         if let Some(out) = app_out {
+            // --- normal save: write to the CORRECT file for the active profile ---
             if let Some(new_cfg) = out.saved_config {
                 self.config.publish(new_cfg.clone());
                 crate::overlay_gen::generate_overlay(&new_cfg);
                 if let Some(dir) = state::get().config_dir.get() {
-                    crate::lua_writer::write_lua_config(&new_cfg, &dir.join("init.lua"));
-                    if !new_cfg.profile.is_empty() {
-                        crate::lua_writer::save_profile(&new_cfg, dir, &new_cfg.profile);
-                    }
+                    crate::lua_writer::save_current_config(&new_cfg, dir);
                 } else {
                     tracing::warn!("can't save config: config dir unknown");
                 }
@@ -358,20 +356,17 @@ impl GuiRenderer {
 
             if let Some(ref name) = out.profile_create {
                 if let Some(dir) = state::get().config_dir.get() {
+                    // save the current profile's draft to its own file
                     let draft = out.pre_switch_draft.as_ref()
                         .cloned()
                         .unwrap_or_else(|| (**self.config.load()).clone());
-                    if !draft.profile.is_empty() {
-                        crate::lua_writer::save_profile(&draft, dir, &draft.profile);
-                    } else {
-                        crate::lua_writer::write_lua_config(&draft, &dir.join("init.lua"));
-                    }
+                    crate::lua_writer::save_current_config(&draft, dir);
 
-                    // new profile starts from defaults
+                    // new profile starts from defaults, saved to profiles/<name>.lua only
                     let mut new_cfg = tuxinjector_config::Config::default();
                     new_cfg.profile = name.clone();
                     crate::lua_writer::save_profile(&new_cfg, dir, name);
-                    crate::lua_writer::write_lua_config(&new_cfg, &dir.join("init.lua"));
+                    crate::lua_writer::save_active_profile(dir, name);
                     self.config.publish(new_cfg.clone());
                     self.app.force_update_config(new_cfg);
                     need_refresh = true;
@@ -381,24 +376,20 @@ impl GuiRenderer {
 
             if let Some(ref target) = out.profile_switch {
                 if let Some(dir) = state::get().config_dir.get() {
-                    // auto-save current before switching
+                    // auto-save current profile's draft to its own file
                     let draft = out.pre_switch_draft.as_ref()
                         .cloned()
                         .unwrap_or_else(|| (**self.config.load()).clone());
-
-                    if !draft.profile.is_empty() {
-                        crate::lua_writer::save_profile(&draft, dir, &draft.profile);
-                    } else {
-                        crate::lua_writer::write_lua_config(&draft, &dir.join("init.lua"));
-                    }
+                    crate::lua_writer::save_current_config(&draft, dir);
 
                     if target.is_empty() {
-                        // switching to default profile
+                        // default profile - load init.lua
                         let init = dir.join("init.lua");
                         match std::fs::read_to_string(&init) {
                             Ok(src) => match tuxinjector_lua::load_lua_config(&src) {
                                 Ok(mut c) => {
                                     c.profile = String::new();
+                                    crate::lua_writer::save_active_profile(dir, "");
                                     self.config.publish(c.clone());
                                     self.app.force_update_config(c);
                                     tracing::info!("switched to default profile");
@@ -411,7 +402,7 @@ impl GuiRenderer {
                         match tuxinjector_lua::load_lua_config(&src) {
                             Ok(mut c) => {
                                 c.profile = target.clone();
-                                crate::lua_writer::write_lua_config(&c, &dir.join("init.lua"));
+                                crate::lua_writer::save_active_profile(dir, target);
                                 self.config.publish(c.clone());
                                 self.app.force_update_config(c);
                                 tracing::info!(profile = target, "switched profile");
@@ -438,6 +429,7 @@ impl GuiRenderer {
                         {
                             Ok(mut c) => {
                                 c.profile = String::new();
+                                crate::lua_writer::save_active_profile(dir, "");
                                 self.config.publish(c.clone());
                                 self.app.force_update_config(c);
                             }
@@ -445,6 +437,7 @@ impl GuiRenderer {
                                 tracing::error!(error = %e, "failed to reload default after delete");
                                 let mut c = (**cur).clone();
                                 c.profile = String::new();
+                                crate::lua_writer::save_active_profile(dir, "");
                                 self.config.publish(c.clone());
                                 self.app.force_update_config(c);
                             }
@@ -462,6 +455,7 @@ impl GuiRenderer {
                     if cur.profile == *old {
                         let mut c = (**cur).clone();
                         c.profile = new.clone();
+                        crate::lua_writer::save_active_profile(dir, new);
                         self.config.publish(c.clone());
                         self.app.force_update_config(c);
                     }
