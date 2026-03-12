@@ -71,7 +71,7 @@ jobs:
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target ${{ matrix.target }} && \
               . \$HOME/.cargo/env && \
               rustup target add ${{ matrix.target }} && \
-              cargo build --release --target ${{ matrix.target }} && \
+              cargo build --release --target ${{ matrix.target }} --config 'patch.crates-io.libspa.path=\"crates/libspa\"' && \
               cp target/${{ matrix.target }}/release/libtuxinjector.so /src/tuxinjector_${{ matrix.suffix }}.so
             "
 

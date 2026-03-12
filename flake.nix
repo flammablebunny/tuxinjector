@@ -29,37 +29,57 @@
       perSystem =
         {
           pkgs,
+          lib,
           self',
           ...
         }:
         {
           packages = {
             default = self'.packages.tuxinjector;
-            tuxinjector = pkgs.callPackage ./package.nix { craneLib = crane.mkLib pkgs; };
+            tuxinjector = pkgs.callPackage ./package.nix {};
           };
 
-          devShells.default = pkgs.mkShell {
-            inputsFrom = [ self'.packages.default ];
+          devShells.default =
+            let
+              craneLib = crane.mkLib pkgs;
+            in
+            pkgs.mkShell {
+              nativeBuildInputs = with pkgs; [
+                clang
+                pkg-config
+                cargo
+                rustc
+              ];
 
-            packages = with pkgs; [
-              clippy
-              rust-analyzer
-              rustfmt
-              python3Packages.mkdocs
-              python3Packages.mkdocs-material
-              python3Packages.pymdown-extensions
-            ];
+              buildInputs = [
+                pkgs.libclang.lib
+              ]
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                pkgs.dbus
+                pkgs.pipewire
+              ]
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+                pkgs.libiconv
+              ];
 
-            # needed for clippy
-            env.LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+              packages = with pkgs; [
+                clippy
+                rust-analyzer
+                rustfmt
+                python3Packages.mkdocs
+                python3Packages.mkdocs-material
+                python3Packages.pymdown-extensions
+              ];
 
-            shellHook = ''
-              echo "tuxinjector dev shell ready"
-              echo "  nix build                # build the .so & run tests"
-              echo "  cargo clippy             # lint"
-              echo "  mkdocs serve             # preview docs"
-            '';
-          };
+              env.LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+
+              shellHook = ''
+                echo "tuxinjector dev shell ready"
+                echo "  ./build.sh               # build the .so (building and using a local binary is not MCSR Ranked / Speedrun.com legal)"
+                echo "  cargo clippy             # lint"
+                echo "  mkdocs serve             # preview docs"
+              '';
+            };
 
           formatter = pkgs.nixfmt-tree;
         };
