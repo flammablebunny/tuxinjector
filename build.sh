@@ -21,7 +21,7 @@ ARCH="$(uname -m)"
 case "$ARCH" in
     x86_64)  ARCH_SUFFIX="x64" ;;
     i686|i386) ARCH_SUFFIX="x86" ;;
-    aarch64) ARCH_SUFFIX="aarch64" ;;
+    aarch64|arm64) ARCH_SUFFIX="aarch64" ;;
     armv7l|armhf) ARCH_SUFFIX="aarch32" ;;
     *) echo "error: unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
