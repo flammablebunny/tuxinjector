@@ -144,3 +144,13 @@ This project would never have been possible without the work of the linux and mc
 - **[jojoe77777](https://github.com/jojoe77777)** - for [toolscreen](https://github.com/jojoe77777/ToolScreen), which laid the groundwork and modeled out the idea for what an injection overlay tool should look like, and how it interacts with the game.
 
 And to everyone who tested any early builds of tux injector, which greatly helped find and iron out various bugs from the codebase.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=flammablebunny%2Ftuxinjector&type=timeline&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=flammablebunny/tuxinjector&type=timeline&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=flammablebunny/tuxinjector&type=timeline&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=flammablebunny/tuxinjector&type=timeline&legend=bottom-right" />
+ </picture>
+</a>
