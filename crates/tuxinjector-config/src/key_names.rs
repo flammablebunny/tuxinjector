@@ -12,7 +12,13 @@ use std::borrow::Cow;
 
 // Keycodes at or above this value represent physical scancodes rather than
 // GLFW virtual keycodes. The actual evdev scancode = keycode - SCANCODE_OFFSET.
-pub const SCANCODE_OFFSET: u32 = 2000;
+// Offset is above Unicode max (U+10FFFF = 1,114,111) + CHAR_OFFSET (1000)
+// so character keycodes and scancodes never collide.
+pub const SCANCODE_OFFSET: u32 = 0x20_0000; // 2,097,152
+
+// Single character keycodes are stored as CHAR_OFFSET + unicode codepoint.
+// This supports the full Unicode range for chat/text rebinds.
+pub const CHAR_OFFSET: u32 = 1000;
 
 // Parse a "Ctrl+Shift+Z" style combo string → sorted Vec of GLFW keycodes.
 pub fn parse_key_combo_str(combo: &str) -> Result<Vec<u32>, String> {
@@ -50,10 +56,10 @@ pub fn parse_key_name(name: &str) -> Option<u32> {
         "u" => Some(85),  "v" => Some(86),  "w" => Some(87),  "x" => Some(88),
         "y" => Some(89),  "z" => Some(90),
 
-        // ── Numeric Keys (0–9) ──
-        "0" => Some(48), "1" => Some(49), "2" => Some(50), "3" => Some(51),
-        "4" => Some(52), "5" => Some(53), "6" => Some(54), "7" => Some(55),
-        "8" => Some(56), "9" => Some(57),
+        // ── Numeric Keys (0–9) + shifted symbols ──
+        "0" | ")" => Some(48), "1" | "!" => Some(49), "2" | "@" => Some(50), "3" | "#" => Some(51),
+        "4" | "$" => Some(52), "5" | "%" => Some(53), "6" | "^" => Some(54), "7" | "&" => Some(55),
+        "8" | "*" => Some(56), "9" | "(" => Some(57),
 
         // ── Function Keys (F1–F24) ──
         "f1"  => Some(290), "f2"  => Some(291), "f3"  => Some(292), "f4"  => Some(293),
@@ -96,17 +102,17 @@ pub fn parse_key_name(name: &str) -> Option<u32> {
         "rsuper" | "right_super"             => Some(347),
 
         // ── Punctuation & Symbols ──
-        "minus"  | "-"   => Some(45),
-        "equal"  | "equals" | "=" => Some(61),
-        "leftbracket"  | "left_bracket"  | "[" => Some(91),
-        "rightbracket" | "right_bracket" | "]" => Some(93),
-        "backslash" | "\\" => Some(92),
-        "semicolon" | ";"  => Some(59),
-        "apostrophe" | "'" => Some(39),
-        "grave" | "grave_accent" | "`" => Some(96),
-        "comma"  | ","  => Some(44),
-        "period" | "."  => Some(46),
-        "slash"  | "/"  => Some(47),
+        "minus"  | "-" | "_"  => Some(45),
+        "equal"  | "equals" | "=" | "+" => Some(61),
+        "leftbracket"  | "left_bracket"  | "[" | "{" => Some(91),
+        "rightbracket" | "right_bracket" | "]" | "}" => Some(93),
+        "backslash" | "\\" | "|" => Some(92),
+        "semicolon" | ";" | ":"  => Some(59),
+        "apostrophe" | "'" | "\"" => Some(39),
+        "grave" | "grave_accent" | "`" | "~" => Some(96),
+        "comma"  | "," | "<"  => Some(44),
+        "period" | "." | ">"  => Some(46),
+        "slash"  | "/" | "?"  => Some(47),
 
         // ── Mouse Buttons ──
         "mouse1" | "mouse_left"   | "lmb" => Some(400),
@@ -138,18 +144,18 @@ pub fn parse_key_name(name: &str) -> Option<u32> {
         "kp_equal"    | "numpad_equal"    => Some(336),
 
         _ => {
-            // Physical scancode: "scan:30" maps to SCANCODE_OFFSET + 30
+            // physical scancode: "scan:30" maps to SCANCODE_OFFSET + 30
             if let Some(sc) = lower.strip_prefix("scan:").or_else(|| lower.strip_prefix("sc:")) {
                 if let Ok(code) = sc.parse::<u32>() {
                     return Some(SCANCODE_OFFSET + code);
                 }
             }
-            // Single printable ASCII character maps to 1000 + char code
-            let bytes = lower.as_bytes();
-            if bytes.len() == 1 {
-                let c = bytes[0];
-                if c >= 0x20 && c <= 0x7e {
-                    return Some(1000 + c as u32);
+            // single character -> CHAR_OFFSET + unicode codepoint
+            // works for ASCII, Cyrillic, CJK, etc.
+            let mut chars = name.chars();
+            if let Some(ch) = chars.next() {
+                if chars.next().is_none() && ch as u32 >= 0x20 {
+                    return Some(CHAR_OFFSET + ch as u32);
                 }
             }
             None
@@ -173,9 +179,17 @@ pub fn keycode_to_name(code: u32) -> Cow<'static, str> {
     if code >= SCANCODE_OFFSET {
         return Cow::Owned(format!("scan:{}", code - SCANCODE_OFFSET));
     }
-    // Character keycodes reside at offset 1000 + ASCII value.
-    if code >= 1032 && code <= 1126 {
-        return Cow::Borrowed(CHAR_NAMES[(code - 1032) as usize]);
+    // character keycodes: CHAR_OFFSET + unicode codepoint
+    if code >= CHAR_OFFSET && code < SCANCODE_OFFSET {
+        let cp = code - CHAR_OFFSET;
+        // fast path for printable ASCII
+        if cp >= 32 && cp <= 126 {
+            return Cow::Borrowed(CHAR_NAMES[(cp - 32) as usize]);
+        }
+        // unicode path
+        if let Some(ch) = char::from_u32(cp) {
+            return Cow::Owned(ch.to_string());
+        }
     }
     Cow::Borrowed(match code {
         65  => "A",  66  => "B",  67  => "C",  68  => "D",
@@ -218,10 +232,10 @@ pub fn keycode_to_name(code: u32) -> Cow<'static, str> {
         284 => "Pause",
         32  => "Space",
 
-        340 => "Shift",
-        341 => "Ctrl",
-        342 => "Alt",
-        343 => "Super",
+        340 => "LShift",
+        341 => "LCtrl",
+        342 => "LAlt",
+        343 => "LSuper",
         344 => "RShift",
         345 => "RCtrl",
         346 => "RAlt",

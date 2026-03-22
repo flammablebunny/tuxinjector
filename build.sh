@@ -11,9 +11,6 @@ if [ "$PROFILE" = "release" ]; then
     CARGO_FLAGS+=(--release)
 fi
 
-echo ":: Building tuxinjector ($PROFILE)..."
-cargo build "${CARGO_FLAGS[@]}"
-
 TARGET_DIR="target/$PROFILE"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -25,6 +22,23 @@ case "$ARCH" in
     armv7l|armhf) ARCH_SUFFIX="aarch32" ;;
     *) echo "error: unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
+
+echo ":: Building tuxinjector ($PROFILE)..."
+
+# build browser helper first so it gets embedded via include_bytes
+if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+    echo ":: Building tuxinjector-browser helper..."
+    if cargo build --manifest-path crates/tuxinjector-browser/Cargo.toml "${CARGO_FLAGS[@]}" 2>/dev/null; then
+        cp "crates/tuxinjector-browser/target/$PROFILE/tuxinjector-browser" "assets/tuxinjector-browser_${ARCH_SUFFIX}"
+        echo ":: tuxinjector-browser embedded into assets/"
+    else
+        echo ":: tuxinjector-browser build failed (non-fatal)"
+    fi
+else
+    echo ":: Skipping tuxinjector-browser (webkit2gtk not found)"
+fi
+
+cargo build "${CARGO_FLAGS[@]}"
 
 if [ "$OS" = "Darwin" ]; then
     SRC="$TARGET_DIR/libtuxinjector.dylib"
@@ -53,7 +67,6 @@ if [ "$OS" = "Darwin" ]; then
     echo ":: Built: $DST"
 
 elif [ "$OS" = "Linux" ]; then
-    # cargo produces libtuxinjector.so on Linux
     SRC="$TARGET_DIR/libtuxinjector.so"
     DST="$TARGET_DIR/tuxinjector_${ARCH_SUFFIX}.so"
 

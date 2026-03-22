@@ -1,0 +1,18 @@
+[package]
+name = "tuxinjector-browser"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "tuxinjector-browser"
+path = "src/main.rs"
+
+[dependencies]
+gtk = "0.18"
+gdk = "0.18"
+glib = "0.18"
+gio = "0.18"
+cairo-rs = { version = "0.18", features = ["use_glib"] }
+webkit2gtk = { version = "2.0", features = ["v2_8", "v2_16"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

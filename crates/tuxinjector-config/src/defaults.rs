@@ -48,6 +48,10 @@ pub fn window_overlay_fps() -> i32 { 30 }
 pub fn window_overlay_search_interval() -> i32 { 1000 }
 pub fn window_overlay_capture_method() -> String { "pipewire".into() }
 
+pub fn browser_overlay_width() -> i32 { 800 }
+pub fn browser_overlay_height() -> i32 { 600 }
+pub fn browser_overlay_fps() -> i32 { 15 }
+
 pub fn mode_relative_width() -> f32 { 0.5 }
 pub fn mode_relative_height() -> f32 { 0.5 }
 

@@ -783,6 +783,74 @@ impl Default for WindowOverlayConfig {
     }
 }
 
+// Renders a web page offscreen and composites it as an overlay.
+// Uses the tuxinjector-browser helper process (WebKitGTK).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BrowserOverlayConfig {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub custom_css: String,
+    #[serde(default = "defaults::browser_overlay_width")]
+    pub width: i32,
+    #[serde(default = "defaults::browser_overlay_height")]
+    pub height: i32,
+    #[serde(default = "defaults::browser_overlay_fps")]
+    pub fps: i32,
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+    #[serde(default = "defaults::scale_one")]
+    pub scale: f32,
+    #[serde(default = "defaults::relative_to_top_left")]
+    pub relative_to: String,
+    #[serde(default = "defaults::opacity_one")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub crop_top: i32,
+    #[serde(default)]
+    pub crop_bottom: i32,
+    #[serde(default)]
+    pub crop_left: i32,
+    #[serde(default)]
+    pub crop_right: i32,
+    #[serde(default)]
+    pub pixelated_scaling: bool,
+    #[serde(default)]
+    pub transparent_background: bool,
+    #[serde(default)]
+    pub border: BorderConfig,
+}
+
+impl Default for BrowserOverlayConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            url: String::new(),
+            custom_css: String::new(),
+            width: 800,
+            height: 600,
+            fps: 15,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            relative_to: defaults::relative_to_top_left(),
+            opacity: 1.0,
+            crop_top: 0,
+            crop_bottom: 0,
+            crop_left: 0,
+            crop_right: 0,
+            pixelated_scaling: false,
+            transparent_background: true,
+            border: BorderConfig::default(),
+        }
+    }
+}
+
 // --- Mode ---
 
 // A display mode controls viewport size, which overlays are visible,
@@ -818,6 +886,8 @@ pub struct ModeConfig {
     pub image_ids: Vec<String>,
     #[serde(default)]
     pub window_overlay_ids: Vec<String>,
+    #[serde(default)]
+    pub browser_overlay_ids: Vec<String>,
     #[serde(default)]
     pub text_overlay_ids: Vec<String>,
     #[serde(default)]
@@ -884,6 +954,7 @@ impl Default for ModeConfig {
             mirror_group_ids: Vec::new(),
             image_ids: Vec::new(),
             window_overlay_ids: Vec::new(),
+            browser_overlay_ids: Vec::new(),
             text_overlay_ids: Vec::new(),
             stretch: StretchConfig::default(),
             game_transition: GameTransitionType::Bounce,
@@ -1409,6 +1480,8 @@ pub struct OverlaysConfig {
     #[serde(default)]
     pub window_overlays: Vec<WindowOverlayConfig>,
     #[serde(default)]
+    pub browser_overlays: Vec<BrowserOverlayConfig>,
+    #[serde(default)]
     pub text_overlays: Vec<TextOverlayConfig>,
     #[serde(default)]
     pub eyezoom: EyeZoomConfig,
@@ -1595,6 +1668,7 @@ impl Default for OverlaysConfig {
                 },
             ],
             window_overlays: Vec::new(),
+            browser_overlays: Vec::new(),
             text_overlays: Vec::new(),
             eyezoom: EyeZoomConfig::default(),
         }

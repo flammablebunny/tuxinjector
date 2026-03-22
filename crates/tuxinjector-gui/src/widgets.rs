@@ -99,6 +99,53 @@ pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt
     changed
 }
 
+// logarithmic slider - scales up slowly at the low end, faster at the top.
+// good for sensitivity where 0.1-2.0 needs precision but 2.0-20.0 is coarse.
+pub fn slider_float_log(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt: &str) -> bool {
+    let range = max - min;
+    let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
+
+    if editing {
+        ui.set_keyboard_focus_here();
+        let mut changed = imgui::Drag::new(label)
+            .range(min, max)
+            .speed(range * 0.001)
+            .display_format(fmt)
+            .build(ui, val);
+        if ui.is_item_deactivated() {
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = None);
+            changed = true;
+        }
+        return changed;
+    }
+
+    let mut changed = ui
+        .slider_config(label, min, max)
+        .display_format(fmt)
+        .flags(SliderFlags::ALWAYS_CLAMP | SliderFlags::NO_INPUT | SliderFlags::LOGARITHMIC)
+        .build(val);
+
+    if ui.is_item_hovered() {
+        // step relative to current value for log sliders
+        let step = if ui.io().key_shift { *val * 0.1 } else { *val * 0.01 };
+        let step = step.max(0.01); // don't let step go to zero
+        if ui.is_key_pressed(imgui::Key::RightArrow) {
+            *val = (*val + step).min(max);
+            changed = true;
+        }
+        if ui.is_key_pressed(imgui::Key::LeftArrow) {
+            *val = (*val - step).max(min);
+            changed = true;
+        }
+        if ui.is_mouse_clicked(imgui::MouseButton::Right) {
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
+        }
+        ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
+    }
+
+    changed
+}
+
 // Font picker combo. `cache` is lazily filled on first open.
 pub fn font_combo(
     ui: &Ui,

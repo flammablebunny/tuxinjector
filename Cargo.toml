@@ -11,6 +11,8 @@ members = [
     "crates/tuxinjector-lua",
     "crates/tuxinjector-plugin-api",
 ]
+# browser helper needs webkit2gtk - build separately with `cargo build -p tuxinjector-browser`
+exclude = ["crates/tuxinjector-browser"]
 resolver = "2"
 
 [workspace.dependencies]

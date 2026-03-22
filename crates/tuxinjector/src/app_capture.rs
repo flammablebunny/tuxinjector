@@ -129,6 +129,10 @@ struct EmbeddedWindow {
     height: u32,
     last_capture: Instant,
     sibling_windows: Vec<Window>,
+    // after initial capture period, we unmap all windows so tiling WMs
+    // don't show them. periodically remap briefly to refresh the capture.
+    went_offscreen_at: Option<Instant>,
+    hidden: bool,
 }
 
 pub struct AppCaptureManager {
@@ -294,10 +298,20 @@ impl AppCaptureManager {
                     height: 0,
                     last_capture: Instant::now() - CAPTURE_INTERVAL,
                     sibling_windows: siblings,
+                    went_offscreen_at: None,
+                    hidden: false,
                 },
             );
-        } else if self.frame % 120 == 0 {
-            self.unmap_new_siblings(pid);
+        } else {
+            // periodically hunt for new sibling windows java might have spawned
+            if self.frame % 120 == 0 {
+                self.unmap_new_siblings(pid);
+            }
+            // re-enforce offscreen positioning - java swing loves to reposition
+            // its own windows during init, which undoes our setup_offscreen
+            if self.frame % 60 == 0 {
+                self.enforce_offscreen(pid);
+            }
         }
 
         // state machine: stabilization -> offscreen transition
@@ -328,6 +342,7 @@ impl AppCaptureManager {
                         tracing::info!(pid, win, "offscreen capture active");
                         let e = self.embedded.get_mut(&pid)?;
                         e.phase = CapturePhase::Offscreen;
+                        e.went_offscreen_at = Some(Instant::now());
                     }
                     Err(e) => {
                         tracing::warn!(pid, win, %e, "offscreen setup failed");
@@ -438,6 +453,33 @@ impl AppCaptureManager {
         results.into_iter().map(|(w, _)| w).collect()
     }
 
+    // after 3 seconds, kill the external window. the captured pixels
+    // persist in the overlay and the java process stays alive.
+    fn enforce_offscreen(&mut self, pid: u32) {
+        let entry = match self.embedded.get_mut(&pid) {
+            Some(e) if matches!(e.phase, CapturePhase::Offscreen) => e,
+            _ => return,
+        };
+
+        if entry.hidden { return; }
+
+        let age = entry.went_offscreen_at
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+
+        if age.as_secs() >= 1 && entry.pixels.is_some() {
+            tracing::info!(pid, "killing app windows (captured enough frames)");
+            if let Some(conn) = self.conn.as_ref() {
+                let _ = conn.destroy_window(entry.window);
+                for &w in &entry.sibling_windows {
+                    let _ = conn.destroy_window(w);
+                }
+                let _ = conn.flush();
+            }
+            entry.hidden = true;
+        }
+    }
+
     fn unmap_new_siblings(&mut self, pid: u32) {
         let capture_win = match self.embedded.get(&pid) {
             Some(e) => e.window,
@@ -464,8 +506,9 @@ impl AppCaptureManager {
         for w in &all_wins {
             if !known.contains(w) {
                 if let Some(conn) = self.conn.as_ref() {
-                    let _ = conn.unmap_window(*w);
-                    let _ = conn.flush();
+                    // full offscreen treatment, not just unmap - java swing will
+                    // remap its own windows if we only unmap them
+                    let _ = setup_offscreen(conn, *w, false);
                 }
                 entry.sibling_windows.push(*w);
             }
@@ -478,6 +521,9 @@ fn do_capture(conn: &RustConnection, entry: &mut EmbeddedWindow) {
     if now.duration_since(entry.last_capture) < CAPTURE_INTERVAL && entry.pixels.is_some() {
         return;
     }
+
+    // after the window is killed, the last captured frame persists
+    if entry.hidden { return; }
 
     let (w, h) = match win_size(conn, entry.window) {
         Some(wh) => wh,
@@ -506,10 +552,38 @@ fn setup_offscreen(conn: &RustConnection, win: Window, already_unmapped: bool) -
         conn.unmap_window(win)?.check()?;
     }
 
+    // override_redirect so the WM doesn't manage it
     conn.change_window_attributes(
         win,
         &ChangeWindowAttributesAux::new().override_redirect(1),
     )?.check()?;
+
+    // set window type to UTILITY — tiling WMs (hyprland) auto-float these
+    if let (Some(wm_type), Some(utility)) = (
+        intern(conn, b"_NET_WM_WINDOW_TYPE"),
+        intern(conn, b"_NET_WM_WINDOW_TYPE_UTILITY"),
+    ) {
+        let _ = conn.change_property32(
+            x11rb::protocol::xproto::PropMode::REPLACE,
+            win, wm_type,
+            x11rb::protocol::xproto::AtomEnum::ATOM,
+            &[utility],
+        );
+    }
+
+    // also tell WMs to skip taskbar/pager
+    if let (Some(state), Some(skip_tb), Some(skip_pg)) = (
+        intern(conn, b"_NET_WM_STATE"),
+        intern(conn, b"_NET_WM_STATE_SKIP_TASKBAR"),
+        intern(conn, b"_NET_WM_STATE_SKIP_PAGER"),
+    ) {
+        let _ = conn.change_property32(
+            x11rb::protocol::xproto::PropMode::REPLACE,
+            win, state,
+            x11rb::protocol::xproto::AtomEnum::ATOM,
+            &[skip_tb, skip_pg],
+        );
+    }
 
     conn.configure_window(
         win,

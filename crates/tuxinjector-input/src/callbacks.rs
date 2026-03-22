@@ -433,9 +433,9 @@ pub fn store_real_set_char_callback(ptr: *mut c_void) {
 // captures text for imgui when GUI is open, applies rebinds otherwise
 pub unsafe extern "C" fn tuxinjector_char_callback(window: GlfwWindow, codepoint: u32) {
     if GUI_VISIBLE.load(Ordering::Relaxed) {
-        if !GUI_CAPTURE_MODE.load(Ordering::Relaxed) {
-            GUI_CHAR_QUEUE.lock().push(codepoint);
-        }
+        // always pass chars to imgui - capture mode only needs the key callback,
+        // not the char callback. blocking chars here breaks text field input.
+        GUI_CHAR_QUEUE.lock().push(codepoint);
         return;
     }
 
@@ -488,9 +488,7 @@ pub unsafe extern "C" fn tuxinjector_char_mods_callback(
     mods: i32,
 ) {
     if GUI_VISIBLE.load(Ordering::Relaxed) {
-        if !GUI_CAPTURE_MODE.load(Ordering::Relaxed) {
-            GUI_CHAR_QUEUE.lock().push(codepoint);
-        }
+        GUI_CHAR_QUEUE.lock().push(codepoint);
         return;
     }
 

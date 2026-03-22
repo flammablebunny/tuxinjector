@@ -1113,7 +1113,7 @@ lazy_gl_resolve!(get_real_gl_scissor, REAL_GL_SCISSOR, b"glScissor\0", GlScissor
 lazy_gl_resolve!(get_real_gl_bind_framebuffer_ext, REAL_GL_BIND_FRAMEBUFFER_EXT, b"glBindFramebufferEXT\0", GlBindFramebufferFn);
 lazy_gl_resolve!(get_real_gl_bind_framebuffer_arb, REAL_GL_BIND_FRAMEBUFFER_ARB, b"glBindFramebufferARB\0", GlBindFramebufferFn);
 
-// Mesa dispatch stub detection: [endbr64] mov rax,[fs:0] ; jmp [rax+imm]
+// Old mesa dispatch stub: [endbr64] mov rax,fs:[abs] ; jmp [rax+imm]
 #[cfg(target_os = "linux")]
 fn looks_like_dispatch_stub(bytes: &[u8]) -> bool {
     if bytes.len() < 12 { return false; }
@@ -1124,6 +1124,61 @@ fn looks_like_dispatch_stub(bytes: &[u8]) -> bool {
     i += 9;
     if bytes[i] != 0xff { return false; }
     matches!(bytes[i + 1], 0xa0 | 0x60)
+}
+
+// Newer mesa dispatch stub uses rip-relative addressing for TLS:
+//   [endbr64] mov rax,[rip+disp32] ; mov r11,fs:[rax] ; jmp [r11+disp32]
+// Can't just memcpy this one - the rip-relative offset breaks when relocated.
+// Returns the prefix offset (nonzero if endbr64 present).
+#[cfg(target_os = "linux")]
+fn looks_like_rip_rel_dispatch_stub(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 16 { return None; }
+    let mut i = 0usize;
+    if bytes.starts_with(&[0xf3, 0x0f, 0x1e, 0xfa]) { i += 4; }
+    if bytes.len() < i + 16 { return None; }
+    if bytes[i] != 0x48 || bytes[i + 1] != 0x8B || bytes[i + 2] != 0x05 { return None; }
+    if bytes[i + 7] != 0x64 || bytes[i + 8] != 0x4C || bytes[i + 9] != 0x8B || bytes[i + 10] != 0x18 {
+        return None;
+    }
+    if bytes[i + 11] != 0x41 || bytes[i + 12] != 0xFF || bytes[i + 13] != 0xA3 { return None; }
+    Some(i)
+}
+
+// Builds a trampoline for the rip-relative dispatch stub. We rewrite the
+// rip-relative mov into an absolute mov (48 A1) so it works at any address,
+// then copy the rest of the stub verbatim (those are all register-indirect).
+#[cfg(target_os = "linux")]
+unsafe fn build_rip_rel_trampoline(stub: *const u8, prefix_off: usize) -> Option<*mut u8> {
+    let i = prefix_off;
+    let disp = i32::from_le_bytes([
+        *stub.add(i + 3), *stub.add(i + 4), *stub.add(i + 5), *stub.add(i + 6),
+    ]);
+    // resolve the actual address the rip-relative load was targeting
+    let abs_addr = (stub.add(i + 7) as i64 + disp as i64) as u64;
+    let tail = std::slice::from_raw_parts(stub.add(i + 7), 11);
+
+    // trampoline: mov rax,[abs64] (10b) + tail (11b) + optional endbr64 prefix
+    let sz = prefix_off + 10 + 11;
+    let mem = libc::mmap(
+        std::ptr::null_mut(), sz,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
+    );
+    if mem == libc::MAP_FAILED { return None; }
+
+    let tramp = mem as *mut u8;
+    if prefix_off > 0 {
+        std::ptr::copy_nonoverlapping(stub, tramp, prefix_off);
+    }
+    // 48 A1 = mov rax, [moffs64]
+    *tramp.add(i) = 0x48;
+    *tramp.add(i + 1) = 0xA1;
+    *(tramp.add(i + 2) as *mut u64) = abs_addr;
+    std::ptr::copy_nonoverlapping(tail.as_ptr(), tramp.add(i + 10), 11);
+
+    tracing::info!(abs_addr = format!("{:#x}", abs_addr), tramp = ?mem,
+        "rip-rel dispatch stub: trampoline built");
+    Some(tramp)
 }
 
 unsafe fn bind_fb_with(real: GlBindFramebufferFn, target: c_uint, fb: c_uint) {
@@ -1186,51 +1241,60 @@ pub unsafe fn install_glviewport_inline_hook() {
     }
 
     let head = std::slice::from_raw_parts(real_mesa, 16);
-    let copy_len: usize;
 
     if looks_like_dispatch_stub(head) {
-        copy_len = 256;
-        tracing::info!("glViewport hook: dispatch stub detected, 256-byte copy");
+        // old mesa: 256-byte dispatch stub, simple memcpy
+        let tramp_mem = libc::mmap(
+            std::ptr::null_mut(), 256,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
+        );
+        if tramp_mem == libc::MAP_FAILED {
+            tracing::warn!("glViewport hook: mmap failed");
+            return;
+        }
+        std::ptr::copy_nonoverlapping(real_mesa, tramp_mem as *mut u8, 256);
+        REAL_GL_VIEWPORT_COPY.get_or_init(|| std::mem::transmute(tramp_mem));
+        tracing::info!("glViewport hook: old dispatch stub, 256-byte copy");
+    } else if let Some(prefix_off) = looks_like_rip_rel_dispatch_stub(head) {
+        // newer mesa rip-relative dispatch - needs fixup trampoline
+        match build_rip_rel_trampoline(real_mesa, prefix_off) {
+            Some(tramp) => {
+                REAL_GL_VIEWPORT_COPY.get_or_init(|| std::mem::transmute(tramp));
+                tracing::info!("glViewport hook: rip-rel dispatch stub patched");
+            }
+            None => {
+                tracing::warn!("glViewport hook: rip-rel trampoline failed");
+                return;
+            }
+        }
     } else if head[0..7] == [0x48, 0x81, 0xEC, 0xB8, 0x00, 0x00, 0x00] && head[7] == 0x89 {
-        // Mesa 25.x real impl prologue (15-byte clean boundary)
-        copy_len = 15;
+        // mesa 25.x real impl prologue, 15-byte clean boundary
+        let copy_len = 15usize;
+        let tramp_mem = libc::mmap(
+            std::ptr::null_mut(), copy_len + 12,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
+        );
+        if tramp_mem == libc::MAP_FAILED {
+            tracing::warn!("glViewport hook: mmap failed");
+            return;
+        }
+        let tramp = tramp_mem as *mut u8;
+        std::ptr::copy_nonoverlapping(real_mesa, tramp, copy_len);
+        let cont_addr = (real_mesa as u64) + copy_len as u64;
+        let jmp = tramp.add(copy_len);
+        *jmp.add(0) = 0x48; *jmp.add(1) = 0xB8;
+        *(jmp.add(2) as *mut u64) = cont_addr;
+        *jmp.add(10) = 0xFF; *jmp.add(11) = 0xE0;
+        REAL_GL_VIEWPORT_COPY.get_or_init(|| std::mem::transmute(tramp_mem));
         tracing::info!("glViewport hook: real impl prologue, 15-byte trampoline");
     } else {
         tracing::warn!(first16 = ?head, "glViewport hook: unknown prologue, skipping");
         return;
     }
 
-    // allocate trampoline page
-    let tramp_alloc = if copy_len == 256 { 256 } else { copy_len + 12 };
-    let tramp_mem = libc::mmap(
-        std::ptr::null_mut(), tramp_alloc,
-        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
-    );
-    if tramp_mem == libc::MAP_FAILED {
-        tracing::warn!("glViewport hook: mmap failed");
-        return;
-    }
-
-    let tramp = tramp_mem as *mut u8;
-    if copy_len == 256 {
-        std::ptr::copy_nonoverlapping(real_mesa, tramp, 256);
-    } else {
-        std::ptr::copy_nonoverlapping(real_mesa, tramp, copy_len);
-        let cont_addr = (real_mesa as u64) + copy_len as u64;
-        let jmp = tramp.add(copy_len);
-        *jmp.add(0) = 0x48; *jmp.add(1) = 0xB8;  // movabs rax, imm64
-        *(jmp.add(2) as *mut u64) = cont_addr;
-        *jmp.add(10) = 0xFF; *jmp.add(11) = 0xE0; // jmp rax
-    }
-
-    tracing::debug!(copy = ?tramp_mem, first12 = ?std::slice::from_raw_parts(real_mesa, 12),
-        copy_len, "glViewport hook: trampoline built");
-
-    let copy_fn: GlViewportFn = std::mem::transmute(tramp_mem);
-    REAL_GL_VIEWPORT_COPY.get_or_init(|| copy_fn);
-
-    // write 12-byte patch over the original
+    // write 12-byte absolute jmp over the original function
     let hook_addr = hook_self as u64;
     let patch: [u8; 12] = [
         0x48, 0xB8,
@@ -1247,15 +1311,11 @@ pub unsafe fn install_glviewport_inline_hook() {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         tracing::warn!(target = ?real_mesa, errno, "glViewport hook: mprotect failed");
     }
-    tracing::warn!(real_mesa = ?real_mesa, hook = ?hook_addr, "glViewport hook: writing 12-byte patch");
     std::ptr::copy_nonoverlapping(patch.as_ptr(), real_mesa, 12);
     libc::mprotect(page as *mut c_void, page_sz, libc::PROT_READ | libc::PROT_EXEC);
 
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-
-    let verify = std::slice::from_raw_parts(real_mesa, 12);
-    tracing::warn!(real_mesa = ?real_mesa, hook = ?hook_addr, copy = ?tramp_mem,
-        verify = ?verify, "glViewport hook: patched -- verify bytes should start with 48 B8");
+    tracing::info!(real_mesa = ?real_mesa, hook = ?hook_addr, "glViewport hook: patched");
 }
 
 /// Same technique for glBindFramebuffer
@@ -1275,25 +1335,36 @@ pub unsafe fn install_glbindframebuffer_inline_hook() {
     }
 
     let head = std::slice::from_raw_parts(from_scan, 16);
-    if !looks_like_dispatch_stub(head) {
-        tracing::warn!(first16 = ?head, "glBindFramebuffer hook: no dispatch stub -- skipping");
+    let copy_mem: *mut u8;
+
+    if looks_like_dispatch_stub(head) {
+        const COPY_SZ: usize = 256;
+        let mem = libc::mmap(
+            std::ptr::null_mut(), COPY_SZ,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
+        );
+        if mem == libc::MAP_FAILED {
+            tracing::warn!("glBindFramebuffer hook: mmap failed");
+            return;
+        }
+        std::ptr::copy_nonoverlapping(from_scan, mem as *mut u8, COPY_SZ);
+        copy_mem = mem as *mut u8;
+        tracing::info!("glBindFramebuffer hook: old dispatch stub, 256-byte copy");
+    } else if let Some(prefix_off) = looks_like_rip_rel_dispatch_stub(head) {
+        // newer mesa uses rip-relative TLS dispatch - needs a fixup trampoline
+        match build_rip_rel_trampoline(from_scan, prefix_off) {
+            Some(tramp) => copy_mem = tramp,
+            None => {
+                tracing::warn!("glBindFramebuffer hook: rip-rel trampoline failed");
+                return;
+            }
+        }
+        tracing::info!("glBindFramebuffer hook: rip-rel dispatch stub patched");
+    } else {
+        tracing::warn!(first16 = ?head, "glBindFramebuffer hook: unknown prologue -- skipping");
         return;
     }
-
-    const COPY_SZ: usize = 256;
-    let copy_mem = libc::mmap(
-        std::ptr::null_mut(), COPY_SZ,
-        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0,
-    );
-    if copy_mem == libc::MAP_FAILED {
-        tracing::warn!("glBindFramebuffer hook: mmap failed");
-        return;
-    }
-
-    std::ptr::copy_nonoverlapping(from_scan, copy_mem as *mut u8, COPY_SZ);
-    tracing::debug!(copy = ?copy_mem, first12 = ?std::slice::from_raw_parts(from_scan, 12),
-        "glBindFramebuffer hook: stub copied");
 
     let copy_fn: GlBindFramebufferFn = std::mem::transmute(copy_mem);
     REAL_GL_BIND_FRAMEBUFFER_COPY.get_or_init(|| copy_fn);

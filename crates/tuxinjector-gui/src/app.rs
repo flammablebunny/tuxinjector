@@ -5,7 +5,7 @@ use crate::tabs::apps::AppsState;
 use crate::tabs::general::GeneralState;
 use crate::tabs::hotkeys::HotkeysState;
 use crate::tabs::key_rebinds::KeyRebindsState;
-use crate::tabs::plugins::PluginsState;
+use crate::tabs::plugins::PluginsState; // still needed for plugin API
 
 pub struct SettingsOutput {
     pub saved_config: Option<Config>,
@@ -26,6 +26,7 @@ pub struct SettingsApp {
     pub selected_mirror_idx: Option<usize>,
     pub selected_image_idx: Option<usize>,
     pub selected_window_overlay_idx: Option<usize>,
+    pub selected_browser_overlay_idx: Option<usize>,
     pub profile_list: Vec<String>,
     pub new_profile_name: String,
     profile_switch: Option<String>,
@@ -51,6 +52,7 @@ impl SettingsApp {
             selected_mirror_idx: None,
             selected_image_idx: None,
             selected_window_overlay_idx: None,
+            selected_browser_overlay_idx: None,
             profile_list: Vec::new(),
             new_profile_name: String::new(),
             profile_switch: None,
@@ -225,8 +227,16 @@ impl SettingsApp {
                     if let Some(_tab) = ui.tab_item("Apps") {
                         crate::tabs::apps::render(ui, &mut self.apps_state);
                     }
-                    if let Some(_tab) = ui.tab_item("Plugins") {
-                        crate::tabs::plugins::render(ui, &mut self.plugins_state);
+                    if let Some(_tab) = ui.tab_item("Browser") {
+                        let live = crate::tabs::browser_overlays::render(
+                            ui,
+                            &mut self.draft,
+                            &mut self.dirty,
+                            &mut self.selected_browser_overlay_idx,
+                        );
+                        if live {
+                            saved = Some(self.draft.clone());
+                        }
                     }
                 }
 

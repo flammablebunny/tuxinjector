@@ -6,7 +6,7 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
     ui.dummy([0.0, 8.0]);
     ui.text("Global Sensitivity:");
     ui.set_next_item_width(-1.0);
-    if crate::widgets::slider_float(ui, "##global_sens", &mut config.input.mouse_sensitivity, 0.1, 5.0, "%.2fx") {
+    if crate::widgets::slider_float_log(ui, "##global_sens", &mut config.input.mouse_sensitivity, 0.1, 20.0, "%.2fx") {
         *dirty = true;
     }
 
@@ -36,7 +36,7 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
 
             if mode.sensitivity_override_enabled {
                 ui.set_next_item_width(-1.0);
-                if crate::widgets::slider_float(ui, &format!("##mode_sens_{i}"), &mut mode.mode_sensitivity, 0.1, 5.0, "%.2fx") {
+                if crate::widgets::slider_float_log(ui, &format!("##mode_sens_{i}"), &mut mode.mode_sensitivity, 0.1, 20.0, "%.2fx") {
                     *dirty = true;
                 }
 
@@ -51,13 +51,13 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
                     ui.text("X:");
                     ui.same_line();
                     ui.set_next_item_width(-1.0);
-                    if crate::widgets::slider_float(ui, &format!("##mode_sens_x_{i}"), &mut mode.mode_sensitivity_x, 0.1, 5.0, "%.2fx") {
+                    if crate::widgets::slider_float_log(ui, &format!("##mode_sens_x_{i}"), &mut mode.mode_sensitivity_x, 0.1, 20.0, "%.2fx") {
                         *dirty = true;
                     }
                     ui.text("Y:");
                     ui.same_line();
                     ui.set_next_item_width(-1.0);
-                    if crate::widgets::slider_float(ui, &format!("##mode_sens_y_{i}"), &mut mode.mode_sensitivity_y, 0.1, 5.0, "%.2fx") {
+                    if crate::widgets::slider_float_log(ui, &format!("##mode_sens_y_{i}"), &mut mode.mode_sensitivity_y, 0.1, 20.0, "%.2fx") {
                         *dirty = true;
                     }
                 }
@@ -85,7 +85,7 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
             ui.text(&keys_str);
 
             ui.set_next_item_width(-1.0);
-            if crate::widgets::slider_float(ui, &format!("##sens_hk_val_{i}"), &mut hk.sensitivity, 0.1, 5.0, "%.2fx") {
+            if crate::widgets::slider_float_log(ui, &format!("##sens_hk_val_{i}"), &mut hk.sensitivity, 0.1, 20.0, "%.2fx") {
                 *dirty = true;
             }
 
@@ -96,13 +96,13 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
                 ui.text("X:");
                 ui.same_line();
                 ui.set_next_item_width(-1.0);
-                if crate::widgets::slider_float(ui, &format!("##sens_hk_x_{i}"), &mut hk.sensitivity_x, 0.1, 5.0, "%.2fx") {
+                if crate::widgets::slider_float_log(ui, &format!("##sens_hk_x_{i}"), &mut hk.sensitivity_x, 0.1, 20.0, "%.2fx") {
                     *dirty = true;
                 }
                 ui.text("Y:");
                 ui.same_line();
                 ui.set_next_item_width(-1.0);
-                if crate::widgets::slider_float(ui, &format!("##sens_hk_y_{i}"), &mut hk.sensitivity_y, 0.1, 5.0, "%.2fx") {
+                if crate::widgets::slider_float_log(ui, &format!("##sens_hk_y_{i}"), &mut hk.sensitivity_y, 0.1, 20.0, "%.2fx") {
                     *dirty = true;
                 }
             }

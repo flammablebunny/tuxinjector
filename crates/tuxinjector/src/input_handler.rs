@@ -188,8 +188,11 @@ impl InputHandler for TuxinjectorInputHandler {
         let orig = key;
         let remapped = self.rebinder.remap_key(key, scancode);
 
-        // GUI key capture mode - grab the key for the hotkey editor
-        if tuxinjector_input::is_gui_capture_mode() && action == 1 /* PRESS */ {
+        // GUI key capture mode - grab the key for the hotkey editor,
+        // but not if a text field is focused (let the user type normally)
+        if tuxinjector_input::is_gui_capture_mode() && action == 1 /* PRESS */
+            && !tuxinjector_input::gui_wants_keyboard()
+        {
             tuxinjector_input::push_captured_key(orig);
             return (true, remapped);
         }
@@ -276,6 +279,12 @@ impl InputHandler for TuxinjectorInputHandler {
         if tuxinjector_input::callbacks::take_cursor_recaptured() {
             self.sens.reset_tracking();
             tracing::debug!("cursor recaptured: sensitivity tracking reset");
+        }
+
+        // When the GUI is open, don't forward cursor movement to the game
+        // (prevents the in-game camera from moving while navigating the menu)
+        if tuxinjector_input::gui_is_visible() {
+            return None;
         }
 
         if tuxinjector_input::is_cursor_captured() {

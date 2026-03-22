@@ -171,6 +171,7 @@ pub struct OverlayState {
     gui: GuiRenderer,
     app_capture: AppCaptureManager,
     win_capture: WindowCaptureManager,
+    browser_capture: crate::browser_capture::BrowserCaptureManager,
     w: u32,
     h: u32,
     frame: u64,
@@ -555,6 +556,7 @@ impl OverlayState {
             gui,
             app_capture: AppCaptureManager::new(),
             win_capture: WindowCaptureManager::new(),
+            browser_capture: crate::browser_capture::BrowserCaptureManager::new(),
             w: 0, h: 0,
             frame: 0,
             t_start: Instant::now(),
@@ -627,8 +629,9 @@ impl OverlayState {
 
         let t_mirrors = Instant::now();
 
-        // sync window overlay capture sessions with config
+        // sync window + browser overlay capture sessions with config
         self.win_capture.sync_sessions(&cfg.overlays.window_overlays);
+        self.browser_capture.sync_sessions(&cfg.overlays.browser_overlays);
 
         let mut scene = build_scene(
             &layout, vp_w, vp_h,
@@ -643,6 +646,7 @@ impl OverlayState {
             self.images_visible,
             self.windows_visible,
             &self.win_capture,
+            &self.browser_capture,
             self.t_start.elapsed().as_secs_f32(),
         );
 
@@ -1171,6 +1175,7 @@ fn build_scene(
     images_visible: bool,
     windows_visible: bool,
     win_capture: &WindowCaptureManager,
+    browser_capture: &crate::browser_capture::BrowserCaptureManager,
     time: f32,
 ) -> SceneDescription {
     let mut elems = Vec::new();
@@ -1578,6 +1583,71 @@ fn build_scene(
                     });
                 }
             }
+        }
+    }
+
+    // --- browser overlays ---
+    // same rendering path as window overlays, just different capture source
+    for (bo_idx, bo_cfg) in cfg.overlays.browser_overlays.iter().enumerate() {
+        if bo_cfg.url.is_empty() { continue; }
+        let bo_key = if bo_cfg.name.is_empty() { format!("__browser_{bo_idx}") } else { bo_cfg.name.clone() };
+        if let Some(frame) = browser_capture.latest_frame(&bo_key) {
+            let fw = frame.width as i32;
+            let fh = frame.height as i32;
+
+            let cx0 = bo_cfg.crop_left.min(fw);
+            let cy0 = bo_cfg.crop_top.min(fh);
+            let cx1 = bo_cfg.crop_right.min(fw - cx0);
+            let cy1 = bo_cfg.crop_bottom.min(fh - cy0);
+            let cw = (fw - cx0 - cx1).max(0) as u32;
+            let ch = (fh - cy0 - cy1).max(0) as u32;
+            if cw == 0 || ch == 0 { continue; }
+
+            let pixels = if cx0 > 0 || cy0 > 0 || cx1 > 0 || cy1 > 0 {
+                let mut cropped = Vec::with_capacity((cw * ch * 4) as usize);
+                for row in cy0..(fh - cy1) {
+                    let src_start = (row as u32 * frame.width + cx0 as u32) as usize * 4;
+                    let src_end = src_start + (cw as usize * 4);
+                    if src_end <= frame.pixels.len() {
+                        cropped.extend_from_slice(&frame.pixels[src_start..src_end]);
+                    }
+                }
+                cropped
+            } else {
+                frame.pixels.clone()
+            };
+
+            let pixels = if bo_cfg.opacity < 1.0 {
+                let a = (bo_cfg.opacity * 255.0) as u8;
+                let mut buf = pixels;
+                for chunk in buf.chunks_exact_mut(4) {
+                    chunk[3] = ((chunk[3] as u16 * a as u16) / 255) as u8;
+                }
+                buf
+            } else {
+                pixels
+            };
+
+            let render_w = cw as f32 * bo_cfg.scale;
+            let render_h = ch as f32 * bo_cfg.scale;
+
+            elems.push(SceneElement::Textured {
+                x: layout.viewport_x + bo_cfg.x as f32,
+                y: layout.viewport_y + bo_cfg.y as f32,
+                w: render_w, h: render_h,
+                tex_width: cw, tex_height: ch,
+                pixels,
+                circle_clip: false,
+                nearest_filter: bo_cfg.pixelated_scaling,
+                filter_target_colors: Vec::new(),
+                filter_output_color: [0.0; 4],
+                filter_sensitivity: 0.0,
+                filter_color_passthrough: false,
+                filter_border_color: [0.0; 4],
+                filter_border_width: 0,
+                filter_gamma_mode: 0,
+                custom_shader: None,
+            });
         }
     }
 

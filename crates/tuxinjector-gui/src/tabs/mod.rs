@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod appearance;
+pub mod browser_overlays;
 pub mod cursors;
 pub mod debug;
 pub mod eyezoom;

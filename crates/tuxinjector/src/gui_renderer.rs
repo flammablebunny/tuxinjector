@@ -66,6 +66,7 @@ impl GuiRenderer {
         let mut imgui = imgui::Context::create();
         imgui.set_ini_filename(None); // don't litter imgui.ini into the game dir
         imgui.set_log_filename(None);
+        imgui.set_clipboard_backend(SystemClipboard);
 
         let font_path = cfg.theme.font_path.clone();
         add_font(&mut imgui, &font_path);
@@ -867,5 +868,53 @@ fn glfw_to_imgui_key(key: i32) -> Option<imgui::Key> {
         344 => Some(imgui::Key::RightShift), 345 => Some(imgui::Key::RightCtrl),
         346 => Some(imgui::Key::RightAlt),   347 => Some(imgui::Key::RightSuper),
         _ => None,
+    }
+}
+
+// clipboard backend for imgui - shells out to system tools.
+// tries wl-paste/wl-copy first (wayland), falls back to xclip (X11).
+struct SystemClipboard;
+
+impl imgui::ClipboardBackend for SystemClipboard {
+    fn get(&mut self) -> Option<String> {
+        // try wayland first, then x11
+        std::process::Command::new("wl-paste")
+            .arg("--no-newline")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .or_else(|| {
+                std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard", "-o"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+            })
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+    }
+
+    fn set(&mut self, value: &str) {
+        // try wayland first
+        if let Ok(mut child) = std::process::Command::new("wl-copy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(ref mut stdin) = child.stdin {
+                use std::io::Write;
+                let _ = stdin.write_all(value.as_bytes());
+            }
+            return;
+        }
+        // fall back to xclip
+        if let Ok(mut child) = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(ref mut stdin) = child.stdin {
+                use std::io::Write;
+                let _ = stdin.write_all(value.as_bytes());
+            }
+        }
     }
 }

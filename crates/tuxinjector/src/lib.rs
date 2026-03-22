@@ -6,6 +6,7 @@ mod app_capture;
 #[cfg(target_os = "macos")]
 #[path = "app_capture_macos.rs"]
 mod app_capture;
+mod browser_capture;
 mod config_init;
 mod dlsym_hook;
 mod overlay_gen;

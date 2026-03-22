@@ -57,6 +57,8 @@
               ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
                 pkgs.dbus
                 pkgs.pipewire
+                pkgs.webkitgtk_4_1
+                pkgs.gtk3
               ]
               ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
                 pkgs.libiconv
