@@ -29,13 +29,13 @@ jobs:
       - name: Build browser helper
         run: |
           cargo build --manifest-path crates/tuxinjector-browser/Cargo.toml --release
-          cp target/release/tuxinjector-browser assets/tuxinjector-browser_${{ matrix.suffix }}
+          cp crates/tuxinjector-browser/target/release/tuxinjector-browser assets/tuxinjector-browser_${{ matrix.suffix }}
 
       - name: Build (with embedded browser helper)
         run: |
           cargo build --release
           mv target/release/libtuxinjector.so tuxinjector_${{ matrix.suffix }}.so
-          cp assets/tuxinjector-browser_${{ matrix.suffix }} tuxinjector-browser_${{ matrix.suffix }}
+          cp crates/tuxinjector-browser/target/release/tuxinjector-browser tuxinjector-browser_${{ matrix.suffix }}
 
       - name: Generate SHA-512 checksums
         run: |
