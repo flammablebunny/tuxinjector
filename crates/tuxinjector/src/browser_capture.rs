@@ -13,15 +13,13 @@ use std::sync::OnceLock;
 use crossbeam_channel::{Receiver, Sender};
 use tuxinjector_config::types::BrowserOverlayConfig;
 
-// embedded at compile time - build tuxinjector-browser first
-#[cfg(target_arch = "x86_64")]
+// embedded at compile time - build tuxinjector-browser first (linux only)
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BROWSER_BIN: &[u8] = include_bytes!("../../../assets/tuxinjector-browser_x64");
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const BROWSER_BIN: &[u8] = include_bytes!("../../../assets/tuxinjector-browser_aarch64");
-// 32-bit targets probably won't have webkit2gtk, but keep stubs so it compiles
-#[cfg(target_arch = "x86")]
-const BROWSER_BIN: &[u8] = &[];
-#[cfg(target_arch = "arm")]
+// macOS, 32-bit, or missing binary — browser overlays disabled
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 const BROWSER_BIN: &[u8] = &[];
 
 // extract once, reuse the path
