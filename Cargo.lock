@@ -815,8 +815,6 @@ dependencies = [
 [[package]]
 name = "libspa"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65f3a4b81b2a2d8c7f300643676202debd1b7c929dbf5c9bb89402ea11d19810"
 dependencies = [
  "bitflags 2.11.0",
  "cc",
