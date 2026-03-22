@@ -227,6 +227,7 @@ impl SettingsApp {
                     if let Some(_tab) = ui.tab_item("Apps") {
                         crate::tabs::apps::render(ui, &mut self.apps_state);
                     }
+                    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
                     if let Some(_tab) = ui.tab_item("Browser") {
                         let live = crate::tabs::browser_overlays::render(
                             ui,
@@ -237,6 +238,10 @@ impl SettingsApp {
                         if live {
                             saved = Some(self.draft.clone());
                         }
+                    }
+                    #[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+                    if let Some(_tab) = ui.tab_item("Plugins") {
+                        crate::tabs::plugins::render(ui, &mut self.plugins_state);
                     }
                 }
 
