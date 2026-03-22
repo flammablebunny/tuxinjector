@@ -35,17 +35,12 @@ jobs:
         run: |
           cargo build --release
           mv target/release/libtuxinjector.so tuxinjector_${{ matrix.suffix }}.so
-          cp crates/tuxinjector-browser/target/release/tuxinjector-browser tuxinjector-browser_${{ matrix.suffix }}
 
-      - name: Generate SHA-512 checksums
-        run: |
-          sha512sum tuxinjector_${{ matrix.suffix }}.so > tuxinjector_${{ matrix.suffix }}.so.sha512
-          sha512sum tuxinjector-browser_${{ matrix.suffix }} > tuxinjector-browser_${{ matrix.suffix }}.sha512
+      - name: Generate SHA-512 checksum
+        run: sha512sum tuxinjector_${{ matrix.suffix }}.so > tuxinjector_${{ matrix.suffix }}.so.sha512
 
-      - name: Print checksums
-        run: |
-          cat tuxinjector_${{ matrix.suffix }}.so.sha512
-          cat tuxinjector-browser_${{ matrix.suffix }}.sha512
+      - name: Print checksum
+        run: cat tuxinjector_${{ matrix.suffix }}.so.sha512
 
       - uses: actions/upload-artifact@v4
         with:
@@ -53,8 +48,6 @@ jobs:
           path: |
             tuxinjector_${{ matrix.suffix }}.so
             tuxinjector_${{ matrix.suffix }}.so.sha512
-            tuxinjector-browser_${{ matrix.suffix }}
-            tuxinjector-browser_${{ matrix.suffix }}.sha512
 
   build-linux-cross:
     strategy:
