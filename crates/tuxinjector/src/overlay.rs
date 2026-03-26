@@ -1632,8 +1632,8 @@ fn build_scene(
             let render_h = ch as f32 * bo_cfg.scale;
 
             elems.push(SceneElement::Textured {
-                x: layout.viewport_x + bo_cfg.x as f32,
-                y: layout.viewport_y + bo_cfg.y as f32,
+                x: bo_cfg.x as f32,
+                y: bo_cfg.y as f32,
                 w: render_w, h: render_h,
                 tex_width: cw, tex_height: ch,
                 pixels,
