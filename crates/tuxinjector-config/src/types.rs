@@ -1201,6 +1201,10 @@ pub struct CursorConfig {
     pub cursor_name: String,
     #[serde(default = "defaults::cursor_size")]
     pub cursor_size: i32,
+    #[serde(default)]
+    pub hotspot_x: f32,
+    #[serde(default)]
+    pub hotspot_y: f32,
 }
 
 impl Default for CursorConfig {
@@ -1208,6 +1212,8 @@ impl Default for CursorConfig {
         Self {
             cursor_name: String::new(),
             cursor_size: 64,
+            hotspot_x: 0.0,
+            hotspot_y: 0.0,
         }
     }
 }
@@ -1458,9 +1464,9 @@ impl Default for ThemeConfig {
             appearance: AppearanceConfig::default(),
             cursors: CursorsConfig {
                 enabled: false,
-                title: CursorConfig { cursor_name: "Arrow".into(), cursor_size: 32 },
-                wall: CursorConfig { cursor_name: "Arrow".into(), cursor_size: 32 },
-                ingame: CursorConfig { cursor_name: "Cross (Inverted, medium)".into(), cursor_size: 32 },
+                title: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.0, hotspot_y: 0.0 },
+                wall: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.0, hotspot_y: 0.0 },
+                ingame: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.5, hotspot_y: 0.5 },
             },
         }
     }

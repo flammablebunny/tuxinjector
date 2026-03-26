@@ -3,7 +3,7 @@
 // and draw it into the game's backbuffer.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -381,6 +381,12 @@ impl BgImageCache {
 
 // --- cursor cache ---
 
+fn dirs_cursors_path() -> PathBuf {
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".config/tuxinjector/cursors"))
+        .unwrap_or_default()
+}
+
 struct CursorCache {
     pixels: Option<Vec<u8>>,
     w: u32,
@@ -416,32 +422,37 @@ impl CursorCache {
         self.loaded_name = name.to_string();
         self.loaded_size = size;
         let sz = size.max(8) as u32;
-        let path = Path::new(name);
 
-        // try loading from file first
-        if path.extension().is_some() && path.exists() {
+        // search: direct path first, then cursors folder
+        let candidates = vec![
+            PathBuf::from(name),
+            dirs_cursors_path().join(name),
+        ];
+
+        for path in &candidates {
+            if !path.exists() { continue; }
             match image_loader::load_image(path) {
                 Ok(ImageData::Static(img)) => {
-                    tracing::info!(name, w = img.width, h = img.height, "loaded cursor from file");
-                    self.hotspot_x = img.width as f32 / 2.0;
-                    self.hotspot_y = img.height as f32 / 2.0;
+                    tracing::info!(?path, w = img.width, h = img.height, "loaded cursor");
                     self.w = img.width;
                     self.h = img.height;
+                    self.hotspot_x = img.width as f32 / 2.0;
+                    self.hotspot_y = img.height as f32 / 2.0;
                     self.pixels = Some(img.pixels);
                     return;
                 }
                 Ok(ImageData::Animated { frames, .. }) => {
                     if let Some(frame) = frames.into_iter().next() {
-                        self.hotspot_x = frame.width as f32 / 2.0;
-                        self.hotspot_y = frame.height as f32 / 2.0;
                         self.w = frame.width;
                         self.h = frame.height;
+                        self.hotspot_x = frame.width as f32 / 2.0;
+                        self.hotspot_y = frame.height as f32 / 2.0;
                         self.pixels = Some(frame.pixels);
                         return;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(name, %e, "cursor file failed, using fallback crosshair");
+                    tracing::warn!(?path, %e, "cursor load failed");
                 }
             }
         }
@@ -1662,34 +1673,47 @@ fn build_scene(
         });
     }
 
-    // custom cursor (always on top of everything)
+    // custom cursor should only be shown when the game is showing a cursor
     if cfg.theme.cursors.enabled {
+        let captured = tuxinjector_input::is_cursor_captured();
         let gs = tuxinjector_lua::get_game_state();
-        let cc = match gs.as_str() {
-            "inworld" => &cfg.theme.cursors.ingame,
-            "wall" => &cfg.theme.cursors.wall,
-            _ => &cfg.theme.cursors.title,
+
+        let cc = if captured {
+            None // cursor grabbed = FPS mode, no cursor
+        } else {
+            match gs.as_str() {
+                // inworld with menu open (not grabbed) — show ingame cursor
+                s if s.starts_with("inworld") => Some(&cfg.theme.cursors.ingame),
+                "wall" => Some(&cfg.theme.cursors.wall),
+                "title" | "waiting" => Some(&cfg.theme.cursors.title),
+                // generating, previewing, etc -  no cursor
+                _ => None,
+            }
         };
 
-        if !cc.cursor_name.is_empty() {
-            if let Some((px, cw, ch, hx, hy)) = cursor_cache.get_cursor(&cc.cursor_name, cc.cursor_size) {
-                let (mx, my) = tuxinjector_input::mouse_position();
+        if let Some(cc) = cc {
+            if !cc.cursor_name.is_empty() {
+                if let Some((px, cw, ch, _hx, _hy)) = cursor_cache.get_cursor(&cc.cursor_name, cc.cursor_size) {
+                    let (mx, my) = tuxinjector_input::raw_mouse_position();
+                    let hx = cw as f32 * cc.hotspot_x;
+                    let hy = ch as f32 * cc.hotspot_y;
 
-                elems.push(SceneElement::Textured {
-                    x: mx as f32 - hx, y: my as f32 - hy,
-                    w: cw as f32, h: ch as f32,
-                    tex_width: cw, tex_height: ch,
-                    pixels: px.to_vec(),
-                    circle_clip: false, nearest_filter: false,
-                    filter_target_colors: Vec::new(),
-                    filter_output_color: [0.0; 4],
-                    filter_sensitivity: 0.0,
-                    filter_color_passthrough: false,
-                    filter_border_color: [0.0; 4],
-                    filter_border_width: 0,
-                    filter_gamma_mode: 0,
-                    custom_shader: None,
-                });
+                    elems.push(SceneElement::Textured {
+                        x: mx as f32 - hx, y: my as f32 - hy,
+                        w: cw as f32, h: ch as f32,
+                        tex_width: cw, tex_height: ch,
+                        pixels: px.to_vec(),
+                        circle_clip: false, nearest_filter: true,
+                        filter_target_colors: Vec::new(),
+                        filter_output_color: [0.0; 4],
+                        filter_sensitivity: 0.0,
+                        filter_color_passthrough: false,
+                        filter_border_color: [0.0; 4],
+                        filter_border_width: 0,
+                        filter_gamma_mode: 0,
+                        custom_shader: None,
+                    });
+                }
             }
         }
     }
