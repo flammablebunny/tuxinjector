@@ -32,50 +32,12 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
         ui.text_disabled(desc);
     }
 
-    // -- Custom color overrides --
-    ui.dummy([0.0, 12.0]);
-    ui.separator();
-    ui.text("Custom Colors");
-    ui.text_disabled("Override specific UI color slots (advanced).");
-
-    ui.dummy([0.0, 6.0]);
-
-    let keys: Vec<String> = config.theme.appearance.custom_colors.keys().cloned().collect();
-    let mut to_remove = None;
-    for key in &keys {
-        ui.text(key);
-        ui.same_line();
-        if let Some(color) = config.theme.appearance.custom_colors.get_mut(key) {
-            let mut rgba = [color.r, color.g, color.b, color.a];
-            if ui.color_edit4(format!("##{key}_color"), &mut rgba) {
-                color.r = rgba[0];
-                color.g = rgba[1];
-                color.b = rgba[2];
-                color.a = rgba[3];
-                *dirty = true;
-            }
-        }
-        ui.same_line();
-        if ui.small_button(&format!("X##{key}_remove")) {
-            to_remove = Some(key.clone());
-            *dirty = true;
-        }
-    }
-
-    if let Some(key) = to_remove {
-        config.theme.appearance.custom_colors.remove(&key);
-    }
-
-    ui.dummy([0.0, 6.0]);
-    if ui.button("Add Custom Color") {
-        let name = format!("color_{}", config.theme.appearance.custom_colors.len());
-        config
-            .theme
-            .appearance
-            .custom_colors
-            .insert(name, tuxinjector_core::Color::WHITE);
-        *dirty = true;
-    }
+    // // -- Custom color overrides --
+    // ui.dummy([0.0, 12.0]);
+    // ui.separator();
+    // ui.text("Custom Colors");
+    // ui.text_disabled("Override specific UI color slots (advanced).");
+    // ... (disabled - no functionality yet)
 
     // -- game gui scale (affects pie chart positioning) --
     ui.dummy([0.0, 16.0]);
