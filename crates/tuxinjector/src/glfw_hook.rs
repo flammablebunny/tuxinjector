@@ -180,7 +180,7 @@ pub fn store_real_get_cursor_pos(ptr: *mut c_void) {
 }
 
 // in FPS mode we return our tracked position; in menu mode we
-// forward to the bundled libglfw
+// forward to the bundled libglfw with viewport offset correction
 #[no_mangle]
 pub unsafe extern "C" fn glfwGetCursorPos(
     window: GlfwWindow,
@@ -197,8 +197,16 @@ pub unsafe extern "C" fn glfwGetCursorPos(
             let real: unsafe extern "C" fn(*mut c_void, *mut c_double, *mut c_double) =
                 std::mem::transmute(ptr);
             real(window, xpos, ypos);
+            // apply viewport centering offset so game gets viewport-space coords
+            let (mw, mh) = crate::viewport_hook::get_mode_size();
+            let (ow, oh) = crate::viewport_hook::get_original_size();
+            if mw > 0 && ow > 0 && (mw != ow || mh != oh) {
+                let cx = (ow as f64 - mw as f64) / 2.0;
+                let cy = (oh as f64 - mh as f64) / 2.0;
+                if !xpos.is_null() { *xpos -= cx; }
+                if !ypos.is_null() { *ypos -= cy; }
+            }
         } else {
-            // transient: dlsym hook hasn't stored this yet
             tracing::warn!("glfwGetCursorPos: bundled ptr not stored yet, returning zeros");
             if !xpos.is_null() { *xpos = 0.0; }
             if !ypos.is_null() { *ypos = 0.0; }
@@ -222,6 +230,11 @@ pub fn store_real_get_key(ptr: *mut c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
     use tuxinjector_input::glfw_types::MOUSE_BUTTON_OFFSET;
+
+    // when GUI is open, report all keys as released to prevent input leak
+    if callbacks::gui_is_visible() {
+        return 0;
+    }
 
     let ptr = REAL_GET_KEY_PTR.load(Ordering::Acquire);
     if ptr.is_null() {
@@ -259,6 +272,11 @@ pub fn store_real_get_mouse_button(ptr: *mut c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn glfwGetMouseButton(window: GlfwWindow, button: c_int) -> c_int {
     use tuxinjector_input::glfw_types::MOUSE_BUTTON_OFFSET;
+
+    // when GUI is open, report all buttons as released to prevent ICM etc.
+    if callbacks::gui_is_visible() {
+        return 0; // GLFW_RELEASE
+    }
 
     let ptr = REAL_GET_MOUSE_BUTTON_PTR.load(Ordering::Acquire);
     if ptr.is_null() {

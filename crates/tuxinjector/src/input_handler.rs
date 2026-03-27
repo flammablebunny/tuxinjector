@@ -86,16 +86,21 @@ impl TuxinjectorInputHandler {
                 let mut target = String::new();
                 if let Some(lock) = state::get().overlay.get() {
                     if let Ok(mut overlay) = lock.lock() {
-                        // toggle: if already in main mode, switch back
-                        let in_main = overlay.effective_mode_id() == main.as_str();
-                        let t = if in_main {
-                            if secondary.is_empty() {
+                        // toggle: if already in secondary, go back to main.
+                        // otherwise (including if in a different mode), go to secondary.
+                        let current = overlay.effective_mode_id();
+                        let in_secondary = !secondary.is_empty() && current == secondary.as_str();
+                        let t = if in_secondary {
+                            main.clone()
+                        } else if secondary.is_empty() {
+                            // no secondary = simple toggle with initial mode
+                            if current == main.as_str() {
                                 overlay.initial_mode_id().to_owned()
                             } else {
-                                secondary.clone()
+                                main.clone()
                             }
                         } else {
-                            main.clone()
+                            secondary.clone()
                         };
                         overlay.switch_mode(&t);
                         target = t;

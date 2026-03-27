@@ -322,13 +322,10 @@ fn process_lua_commands() {
                 let mut target = String::new();
                 if let Some(lock) = tx.overlay.get() {
                     if let Ok(mut overlay) = lock.lock() {
-                        // effective_mode_id returns the transition target mid-bounce,
-                        // so pressing the key again correctly reverses direction
-                        let in_main = overlay.effective_mode_id() == main.as_str();
-                        target = if in_main { fallback.clone() } else { main.clone() };
+                        let current = overlay.effective_mode_id();
+                        target = if current == main.as_str() { fallback.clone() } else { main.clone() };
                         tracing::debug!(
-                            effective = overlay.effective_mode_id(),
-                            in_main,
+                            effective = %current,
                             target = %target,
                             "toggle_mode: resolved via effective_mode_id"
                         );

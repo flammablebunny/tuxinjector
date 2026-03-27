@@ -1098,6 +1098,11 @@ impl OverlayState {
         if self.gui.is_visible() {
             unsafe { tuxinjector_input::force_cursor_visible(); }
 
+            // seed raw mouse position so imgui can establish hover on the
+            // first frame (fixes scroll not working until click/keypress)
+            let (ow, oh) = crate::viewport_hook::get_original_size();
+            tuxinjector_input::callbacks::seed_raw_mouse_if_stale(ow, oh);
+
             // write onboarding sentinel so the startup toast doesn't show again
             if let Some(dir) = crate::state::get().config_dir.get() {
                 let sentinel = dir.join(".onboarded");

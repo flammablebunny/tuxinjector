@@ -214,11 +214,13 @@ impl GuiRenderer {
                 }
             }
 
-            // update modifier keys so Ctrl/Shift state stays consistent
+            // update modifier keys so Ctrl state stays consistent
+            // note: we intentionally don't forward Shift to imgui because it
+            // converts Shift+Scroll to horizontal scroll, which is probably unwanted.
+            // i guess im doing this now, so credit to justin
             {
                 use tuxinjector_input::glfw_types::*;
                 io.add_key_event(imgui::Key::ModCtrl, (self.last_mods & GLFW_MOD_CONTROL) != 0);
-                io.add_key_event(imgui::Key::ModShift, (self.last_mods & GLFW_MOD_SHIFT) != 0);
                 io.add_key_event(imgui::Key::ModAlt, (self.last_mods & GLFW_MOD_ALT) != 0);
                 io.add_key_event(imgui::Key::ModSuper, (self.last_mods & GLFW_MOD_SUPER) != 0);
             }

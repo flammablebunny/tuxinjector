@@ -76,6 +76,19 @@ pub fn raw_mouse_position() -> (f64, f64) {
     (x, y)
 }
 
+/// Seed the raw mouse position from the GLFW window center if no cursor
+/// event has been received yet. Makes sure imgui can establish hover on
+/// the first GUI frame (fixes the scroll-after-click issue).
+pub fn seed_raw_mouse_if_stale(window_w: u32, window_h: u32) {
+    let (rx, ry) = raw_mouse_position();
+    if rx == 0.0 && ry == 0.0 && window_w > 0 && window_h > 0 {
+        let cx = window_w as f64 / 2.0;
+        let cy = window_h as f64 / 2.0;
+        RAW_MOUSE_X.store(cx.to_bits(), Ordering::Relaxed);
+        RAW_MOUSE_Y.store(cy.to_bits(), Ordering::Relaxed);
+    }
+}
+
 // --- key rebind maps ---
 
 // reverse: (to_key, from_key) - for glfwGetKey lookups

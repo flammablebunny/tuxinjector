@@ -186,10 +186,14 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         // -- GLX --
         #[cfg(target_os = "linux")]
         b"glXGetProcAddressARB" => {
-            let real_ptr = real_dlsym()(handle, symbol);
+            // RTLD_NEXT to skip our own #[no_mangle] PLT export and get
+            // the real glXGetProcAddressARB from libGL/libGLX
+            let real_ptr = real_dlsym()(libc::RTLD_NEXT, symbol);
             if !real_ptr.is_null() {
                 gl_resolve::store_glx_get_proc_address(real_ptr);
                 tracing::info!("hooked glXGetProcAddressARB");
+            } else {
+                tracing::warn!("glXGetProcAddressARB: RTLD_NEXT returned null");
             }
             hooked_egl_get_proc_address as *mut c_void
         }
@@ -200,7 +204,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             if !real_ptr.is_null() {
                 swap_hook::store_real_glx_swap(real_ptr);
 
-                let gpa = real_dlsym()(handle, b"glXGetProcAddressARB\0".as_ptr() as *const c_char);
+                // RTLD_NEXT to skip our PLT export and get the real one
+                let gpa = real_dlsym()(libc::RTLD_NEXT, b"glXGetProcAddressARB\0".as_ptr() as *const c_char);
                 if !gpa.is_null() {
                     gl_resolve::store_glx_get_proc_address(gpa);
                     tracing::debug!("got glXGetProcAddressARB (fallback via glXSwapBuffers hook)");
@@ -422,7 +427,9 @@ unsafe extern "C" fn hooked_egl_get_proc_address(name: *const c_char) -> *mut c_
     if let Some(f) = gl_resolve::get_proc_address_fn() {
         f(name)
     } else {
-        std::ptr::null_mut()
+        // GPA not available yet (pre-context) - fall back to dlsym so GL
+        // context creation can still resolve functions (fixes NVIDIA GLX)
+        libc::dlsym(libc::RTLD_DEFAULT, name)
     }
 }
 

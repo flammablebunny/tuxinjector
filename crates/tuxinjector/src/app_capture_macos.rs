@@ -975,10 +975,12 @@ impl AppCaptureManager {
                     let ok = preflight();
                     tracing::info!(granted = ok, "CGPreflightScreenCaptureAccess");
                     if !ok {
-                        if let Some(request) = cg.request_screen_capture {
-                            let prompted = request();
-                            tracing::info!(prompted, "CGRequestScreenCaptureAccess");
-                        }
+                        // don't call CGRequestScreenCaptureAccess here, it can
+                        // crash in SCKit's XPC cleanup when perms are granted
+                        // mid-session. user must grant in System Settings manually.
+                        // thanks to slackow for finding this bug
+                        tracing::warn!("screen recording permission not granted — \
+                            grant in System Settings > Privacy & Security > Screen Recording");
                     }
                 } else {
                     tracing::info!("screen capture preflight not available (pre-10.15?)");
