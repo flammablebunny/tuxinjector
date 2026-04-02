@@ -52,7 +52,7 @@ Set the environment variable in your instance settings:
 DYLD_INSERT_LIBRARIES=/path/to/tuxinjector.dylib
 ```
 
-See the [usage docs](https://flammablebunny.github.io/tuxinjector/usage/) for full setup instructions.
+See the [usage docs](https://flammablebunny.github.io/tuxinjector/installation/) for full setup instructions.
 
 ---
 
