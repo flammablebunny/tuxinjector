@@ -129,10 +129,17 @@ struct EmbeddedWindow {
     height: u32,
     last_capture: Instant,
     sibling_windows: Vec<Window>,
-    // after initial capture period, we unmap all windows so tiling WMs
-    // don't show them. periodically remap briefly to refresh the capture.
-    went_offscreen_at: Option<Instant>,
-    hidden: bool,
+    // background capture thread writes here
+    bg_pixels: Option<std::sync::Arc<std::sync::Mutex<BgCapture>>>,
+    last_bg_gen: u64,
+}
+
+struct BgCapture {
+    pixels: Option<Vec<u8>>,
+    width: u32,
+    height: u32,
+    gen: u64,
+    stop: bool,
 }
 
 pub struct AppCaptureManager {
@@ -298,20 +305,12 @@ impl AppCaptureManager {
                     height: 0,
                     last_capture: Instant::now() - CAPTURE_INTERVAL,
                     sibling_windows: siblings,
-                    went_offscreen_at: None,
-                    hidden: false,
+                    bg_pixels: None,
+                    last_bg_gen: 0,
                 },
             );
-        } else {
-            // periodically hunt for new sibling windows java might have spawned
-            if self.frame % 120 == 0 {
-                self.unmap_new_siblings(pid);
-            }
-            // re-enforce offscreen positioning - java swing loves to reposition
-            // its own windows during init, which undoes our setup_offscreen
-            if self.frame % 60 == 0 {
-                self.enforce_offscreen(pid);
-            }
+        } else if self.frame % 120 == 0 {
+            self.unmap_new_siblings(pid);
         }
 
         // state machine: stabilization -> offscreen transition
@@ -342,7 +341,6 @@ impl AppCaptureManager {
                         tracing::info!(pid, win, "offscreen capture active");
                         let e = self.embedded.get_mut(&pid)?;
                         e.phase = CapturePhase::Offscreen;
-                        e.went_offscreen_at = Some(Instant::now());
                     }
                     Err(e) => {
                         tracing::warn!(pid, win, %e, "offscreen setup failed");
@@ -357,14 +355,38 @@ impl AppCaptureManager {
             return None;
         }
 
-        // rate-limited pixel capture
+        // start background capture thread if not yet running
         {
-            let conn = self.conn.as_ref()?;
             let entry = self.embedded.get_mut(&pid)?;
-            do_capture(conn, entry);
+            if entry.bg_pixels.is_none() && matches!(entry.phase, CapturePhase::Offscreen) {
+                let shared = std::sync::Arc::new(std::sync::Mutex::new(BgCapture {
+                    pixels: None, width: 0, height: 0, gen: 0, stop: false,
+                }));
+                entry.bg_pixels = Some(shared.clone());
+                let win = entry.window;
+                let screen = self.screen_num;
+                std::thread::Builder::new()
+                    .name("app-capture".into())
+                    .spawn(move || bg_capture_loop(win, screen, shared))
+                    .ok();
+            }
         }
 
-        let entry = self.embedded.get(&pid)?;
+        // read latest pixels from background thread (only clone when new data)
+        let entry = self.embedded.get_mut(&pid)?;
+        if let Some(bg) = &entry.bg_pixels {
+            if let Ok(guard) = bg.lock() {
+                if guard.gen != entry.last_bg_gen {
+                    if let Some(ref px) = guard.pixels {
+                        entry.pixels = Some(px.clone());
+                        entry.width = guard.width;
+                        entry.height = guard.height;
+                        entry.last_bg_gen = guard.gen;
+                    }
+                }
+            }
+        }
+
         let pixels = entry.pixels.as_ref()?;
         if entry.width == 0 || entry.height == 0 {
             return None;
@@ -453,33 +475,6 @@ impl AppCaptureManager {
         results.into_iter().map(|(w, _)| w).collect()
     }
 
-    // after 3 seconds, kill the external window. the captured pixels
-    // persist in the overlay and the java process stays alive.
-    fn enforce_offscreen(&mut self, pid: u32) {
-        let entry = match self.embedded.get_mut(&pid) {
-            Some(e) if matches!(e.phase, CapturePhase::Offscreen) => e,
-            _ => return,
-        };
-
-        if entry.hidden { return; }
-
-        let age = entry.went_offscreen_at
-            .map(|t| t.elapsed())
-            .unwrap_or_default();
-
-        if age.as_secs() >= 1 && entry.pixels.is_some() {
-            tracing::info!(pid, "killing app windows (captured enough frames)");
-            if let Some(conn) = self.conn.as_ref() {
-                let _ = conn.destroy_window(entry.window);
-                for &w in &entry.sibling_windows {
-                    let _ = conn.destroy_window(w);
-                }
-                let _ = conn.flush();
-            }
-            entry.hidden = true;
-        }
-    }
-
     fn unmap_new_siblings(&mut self, pid: u32) {
         let capture_win = match self.embedded.get(&pid) {
             Some(e) => e.window,
@@ -506,8 +501,8 @@ impl AppCaptureManager {
         for w in &all_wins {
             if !known.contains(w) {
                 if let Some(conn) = self.conn.as_ref() {
-                    // full offscreen treatment, not just unmap - java swing will
-                    // remap its own windows if we only unmap them
+                    // full offscreen treatment, not just unmap -- java swing
+                    // remaps its own windows if we only unmap them
                     let _ = setup_offscreen(conn, *w, false);
                 }
                 entry.sibling_windows.push(*w);
@@ -521,9 +516,6 @@ fn do_capture(conn: &RustConnection, entry: &mut EmbeddedWindow) {
     if now.duration_since(entry.last_capture) < CAPTURE_INTERVAL && entry.pixels.is_some() {
         return;
     }
-
-    // after the window is killed, the last captured frame persists
-    if entry.hidden { return; }
 
     let (w, h) = match win_size(conn, entry.window) {
         Some(wh) => wh,
@@ -547,6 +539,47 @@ fn do_capture(conn: &RustConnection, entry: &mut EmbeddedWindow) {
     }
 }
 
+fn bg_capture_loop(
+    win: Window,
+    screen: usize,
+    shared: std::sync::Arc<std::sync::Mutex<BgCapture>>,
+) {
+    let (conn, _) = match x11rb::connect(None) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    loop {
+        std::thread::sleep(CAPTURE_INTERVAL);
+
+        if let Ok(guard) = shared.lock() {
+            if guard.stop { return; }
+        }
+
+        let (w, h) = match win_size(&conn, win) {
+            Some(wh) => wh,
+            None => continue,
+        };
+        if w == 0 || h == 0 { continue; }
+
+        match conn.get_image(ImageFormat::Z_PIXMAP, win, 0, 0, w as u16, h as u16, !0) {
+            Ok(cookie) => match cookie.reply() {
+                Ok(reply) => {
+                    let px = bgra_to_rgba(&reply.data, reply.depth);
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.pixels = Some(px);
+                        guard.width = w;
+                        guard.height = h;
+                        guard.gen += 1;
+                    }
+                }
+                Err(_) => {}
+            },
+            Err(_) => {}
+        }
+    }
+}
+
 fn setup_offscreen(conn: &RustConnection, win: Window, already_unmapped: bool) -> X11Res<()> {
     if !already_unmapped {
         conn.unmap_window(win)?.check()?;
@@ -558,7 +591,7 @@ fn setup_offscreen(conn: &RustConnection, win: Window, already_unmapped: bool) -
         &ChangeWindowAttributesAux::new().override_redirect(1),
     )?.check()?;
 
-    // set window type to UTILITY — tiling WMs (hyprland) auto-float these
+    // set window type to UTILITY -- tiling WMs (hyprland) auto-float these
     if let (Some(wm_type), Some(utility)) = (
         intern(conn, b"_NET_WM_WINDOW_TYPE"),
         intern(conn, b"_NET_WM_WINDOW_TYPE_UTILITY"),
@@ -571,7 +604,7 @@ fn setup_offscreen(conn: &RustConnection, win: Window, already_unmapped: bool) -
         );
     }
 
-    // also tell WMs to skip taskbar/pager
+    // tell WMs to skip taskbar/pager
     if let (Some(state), Some(skip_tb), Some(skip_pg)) = (
         intern(conn, b"_NET_WM_STATE"),
         intern(conn, b"_NET_WM_STATE_SKIP_TASKBAR"),

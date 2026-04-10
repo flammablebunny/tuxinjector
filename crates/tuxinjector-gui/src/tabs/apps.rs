@@ -318,6 +318,8 @@ fn resolve_java() -> String {
 
 #[cfg(target_os = "linux")]
 fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
+    use std::os::unix::process::CommandExt;
+
     let ld = nix_ld_path();
     let java = resolve_java();
 
@@ -336,6 +338,13 @@ fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, St
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    // auto-kill child when game exits (prevents zombie processes)
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     cmd.spawn()
         .map_err(|e| format!("java -jar: {e} -- is java installed?"))
 }
