@@ -4,7 +4,17 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::ChildStdin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+// Lock-free counter so other threads (e.g. the swap hook fast path) can
+// cheaply check whether any companion apps are registered.
+static REGISTERED_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Cheap, lock-free count of currently-registered companion apps.
+pub fn registered_count() -> usize {
+    REGISTERED_COUNT.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Anchor {
@@ -87,12 +97,14 @@ pub fn register(pid: u32, name: impl Into<String>, mode: LaunchMode) {
     if let Ok(mut list) = registry().lock() {
         list.retain(|a| a.pid != pid);
         list.push(RunningApp { pid, name: name.into(), mode });
+        REGISTERED_COUNT.store(list.len(), Ordering::Relaxed);
     }
 }
 
 pub fn unregister(pid: u32) {
     if let Ok(mut list) = registry().lock() {
         list.retain(|a| a.pid != pid);
+        REGISTERED_COUNT.store(list.len(), Ordering::Relaxed);
     }
     unregister_stdin(pid);
 }

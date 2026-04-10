@@ -237,12 +237,15 @@ fn first_frame_init() {
         tuxinjector_input::register_input_handler(Box::new(handler));
         tracing::info!("tuxinjector: input handler registered");
 
-        // patch Mesa GL calls in-place so LWJGL3+RTLD_DEEPBIND hits our hooks
-        // (macOS has neither RTLD_DEEPBIND nor Mesa)
+        // install inline hooks (creates trampolines), then immediately unpatch
+        // since we start in fullscreen - hooks are only patched on mode switch.
+        // LWJGL has Mesa's real pointers cached (getProcAddress returns real),
+        // so inline hooks are the ONLY interception path for GL calls.
         #[cfg(target_os = "linux")]
         unsafe {
             crate::viewport_hook::install_glviewport_inline_hook();
             crate::viewport_hook::install_glbindframebuffer_inline_hook();
+            crate::viewport_hook::unpatch_inline_hooks();
         };
     });
 }
@@ -363,8 +366,18 @@ fn process_lua_commands() {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
                 #[cfg(target_os = "linux")]
-                cmd.env("GDK_BACKEND", "x11")
-                    .env("_JAVA_AWT_WM_NONREPARENTING", "1");
+                {
+                    use std::os::unix::process::CommandExt;
+                    cmd.env("GDK_BACKEND", "x11")
+                        .env("_JAVA_AWT_WM_NONREPARENTING", "1");
+                    // auto-kill child when game exits
+                    unsafe {
+                        cmd.pre_exec(|| {
+                            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                            Ok(())
+                        });
+                    }
+                }
                 match cmd.spawn()
                 {
                     Ok(child) => {
@@ -740,17 +753,38 @@ unsafe fn clear_mode_borders(
     (gl.disable)(GL_SCISSOR_TEST);
 }
 
+// tracks whether the overlay had anything to draw last frame.
+// when false AND no state changes pending, we skip the entire overlay pipeline.
+static SCENE_ACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// Set by overlay.rs after build_scene — true if there were elements, gui visible, or apps running.
+pub fn set_scene_active(active: bool) {
+    SCENE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
 // main per-frame render path
 unsafe fn render_overlay() {
     if !INITIALIZED.load(Ordering::Acquire) { return; }
 
-    let t0 = std::time::Instant::now();
+    // fast path: if scene was empty last frame, gui is hidden, AND there
+    // are no companion apps registered, skip the entire overlay pipeline.
+    // (companion apps need render_and_composite → app_capture.embed to run
+    // so they get discovered, reparented, and embedded — otherwise they
+    // never appear until the user opens the gui.)
+    let gui_vis = tuxinjector_input::gui_is_visible();
+    let has_apps = tuxinjector_gui::running_apps::registered_count() > 0;
+    if !SCENE_ACTIVE.load(Ordering::Relaxed) && !gui_vis && !has_apps {
+        // still need to process lua commands and poll borderless toggle
+        // (these can change state that makes the scene active next frame)
+        crate::viewport_hook::poll_borderless_toggle();
+        process_lua_commands();
+        capture_original_size();
+        return;
+    }
 
     capture_original_size();
     crate::viewport_hook::poll_borderless_toggle();
     process_lua_commands();
-
-    let t_pre = std::time::Instant::now();
 
     let tx = state::get();
 
@@ -759,12 +793,8 @@ unsafe fn render_overlay() {
         if ow > 0 && oh > 0 { (ow, oh) } else { return; }
     };
 
-    if w == 0 || h == 0 { return; }
-
     if let Some(lock) = tx.overlay.get() {
         if let Ok(mut overlay) = lock.lock() {
-            let t_lock = std::time::Instant::now();
-
             if let Some(gl) = tx.gl.get() {
                 // bypass virtual FBO so bind_framebuffer(0) hits the real backbuffer
                 let _fb_guard = crate::virtual_fb::fb_bypass_guard();
@@ -773,14 +803,10 @@ unsafe fn render_overlay() {
 
                 if mw > 0 && mh > 0 && (mw != w || mh != h) {
                     let oversized = crate::viewport_hook::is_oversized(mw, mh, w, h);
-                    // oversized always needs blit-back from virtual FBO;
-                    // undersized only needs centering when viewport hook isn't active
                     if oversized || !crate::viewport_hook::is_gl_viewport_hooked() {
                         center_game_content(gl, mw, mh, w, h);
                     }
 
-                    // macOS fullscreen: viewport hook centered the game but we
-                    // can't resize the window, so black out the border areas
                     #[cfg(target_os = "macos")]
                     if !oversized && crate::viewport_hook::is_gl_viewport_hooked() {
                         clear_mode_borders(gl, mw, mh, w, h);
@@ -801,23 +827,6 @@ unsafe fn render_overlay() {
                 tuxinjector_lua::update_active_res(rw, rh);
             } else {
                 tuxinjector_lua::update_active_res(w, h);
-            }
-
-            let t_done = std::time::Instant::now();
-
-            // periodic perf breakdown
-            static SWAP_CTR: std::sync::atomic::AtomicU32 =
-                std::sync::atomic::AtomicU32::new(0);
-            let ctr = SWAP_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let log_perf = tx.config.load().advanced.debug.log_performance;
-            if log_perf && ctr % 300 == 0 {
-                tracing::info!(
-                    preamble_us = t_pre.duration_since(t0).as_micros() as u64,
-                    lock_us = t_lock.duration_since(t_pre).as_micros() as u64,
-                    render_us = t_done.duration_since(t_lock).as_micros() as u64,
-                    total_us = t_done.duration_since(t0).as_micros() as u64,
-                    "PERF: render_overlay timing"
-                );
             }
         }
     }

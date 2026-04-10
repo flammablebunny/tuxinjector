@@ -524,6 +524,11 @@ impl GlOverlayRenderer {
             return;
         }
 
+        // skip ALL GL work when there's nothing to draw  - this avoids unnecesary GPU pipeline sync
+        if elements.is_empty() {
+            return;
+        }
+
         let vp = [0, 0, vp_w as GLint, vp_h as GLint];
 
         // periodically re-query the game's state so our corrections stay accurate

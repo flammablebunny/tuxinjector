@@ -589,15 +589,15 @@ impl OverlayState {
     ) -> Result<(), Box<dyn std::error::Error>> {
         if vp_w == 0 || vp_h == 0 { return Ok(()); }
 
-        let t0 = Instant::now();
+        let cfg = self.config.load();
+        let perf_log = cfg.advanced.debug.log_performance;
+        let t0 = if perf_log { Some(Instant::now()) } else { None };
 
         if self.w != vp_w || self.h != vp_h {
             self.w = vp_w;
             self.h = vp_h;
             self.mode_system.update_screen_size(vp_w, vp_h);
         }
-
-        let cfg = self.config.load();
 
         // reload custom shaders on config change
         let cv = self.config.version();
@@ -608,10 +608,10 @@ impl OverlayState {
 
         let layout = self.mode_system.tick(&cfg);
 
-        // periodic diagnostic log
+        // periodic diagnostic log (every 120 frames)
         static DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let diag_ctr = DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if diag_ctr % 120 == 0 {
+        if perf_log && diag_ctr % 120 == 0 {
             let ids: Vec<&str> = layout.mirrors.iter().map(|m| m.mirror_id.as_str()).collect();
             tracing::debug!(
                 frame = diag_ctr,
@@ -633,12 +633,12 @@ impl OverlayState {
             }
         }
 
-        let t_tick = Instant::now();
+        let t_tick = if perf_log { Some(Instant::now()) } else { None };
 
         // mirrors must run every frame (PBO double-buffer pipeline)
         self.capture_mirrors(&cfg, &layout);
 
-        let t_mirrors = Instant::now();
+        let t_mirrors = if perf_log { Some(Instant::now()) } else { None };
 
         // sync window + browser overlay capture sessions with config
         self.win_capture.sync_sessions(&cfg.overlays.window_overlays);
@@ -661,9 +661,7 @@ impl OverlayState {
             self.t_start.elapsed().as_secs_f32(),
         );
 
-        let t_scene = Instant::now();
-
-        // embed anchored companion app windows
+        let t_scene = if perf_log { Some(Instant::now()) } else { None };
         {
             use tuxinjector_gui::running_apps::LaunchMode;
 
@@ -750,16 +748,16 @@ impl OverlayState {
             }
         }
 
-        let t_plugins = Instant::now();
-
         let n_elems = scene.elements.len();
+
+        // update fast-path flag: scene is active if there are elements or gui visible.
+        // apps/plugins push to scene.elements above, so n_elems covers them.
+        crate::swap_hook::set_scene_active(n_elems > 0 || self.gui.is_visible());
 
         // draw scene into game's backbuffer
         if let Some(ref mut renderer) = self.gl_renderer {
             renderer.draw_scene(&self.interop_gl, &scene.elements, vp_w, vp_h, scene.time);
         }
-
-        let t_draw = Instant::now();
 
         // imgui overlay (always on top of everything)
         {
@@ -795,23 +793,39 @@ impl OverlayState {
             self.gui.render(vp_w, vp_h, &gui_input, perf.as_ref());
         }
 
-        let t_gui = Instant::now();
+        // perf logging (only when enabled)
+        if perf_log {
+            if let (Some(t0), Some(t_tick), Some(t_mirrors), Some(t_scene)) =
+                (t0, t_tick, t_mirrors, t_scene)
+            {
+                let t_now = Instant::now();
+                let total_us = t_now.duration_since(t0).as_micros() as u64;
+                if total_us > 2_000 {
+                    tracing::warn!(
+                        total_us,
+                        tick = t_tick.duration_since(t0).as_micros() as u64,
+                        mirrors = t_mirrors.duration_since(t_tick).as_micros() as u64,
+                        scene = t_scene.duration_since(t_mirrors).as_micros() as u64,
+                        elems = n_elems,
+                        "SLOW FRAME (>2ms)"
+                    );
+                }
+            }
 
-        // log per-section timing every 300 frames
-        static FTCTR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let fc = FTCTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if cfg.advanced.debug.log_performance && fc % 300 == 0 {
-            tracing::info!(
-                tick_us = t_tick.duration_since(t0).as_micros() as u64,
-                mirrors_us = t_mirrors.duration_since(t_tick).as_micros() as u64,
-                scene_us = t_scene.duration_since(t_mirrors).as_micros() as u64,
-                plugins_us = t_plugins.duration_since(t_scene).as_micros() as u64,
-                draw_us = t_draw.duration_since(t_plugins).as_micros() as u64,
-                gui_us = t_gui.duration_since(t_draw).as_micros() as u64,
-                elements = n_elems,
-                total_us = t_gui.duration_since(t0).as_micros() as u64,
-                "PERF: render_and_composite"
-            );
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static FPS_FRAMES: AtomicU32 = AtomicU32::new(0);
+            static FPS_START: std::sync::OnceLock<std::sync::Mutex<Instant>> = std::sync::OnceLock::new();
+            let fps_start = FPS_START.get_or_init(|| std::sync::Mutex::new(Instant::now()));
+            FPS_FRAMES.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut start) = fps_start.lock() {
+                let elapsed = start.elapsed();
+                if elapsed.as_secs() >= 1 {
+                    let frames = FPS_FRAMES.swap(0, Ordering::Relaxed);
+                    let fps = frames as f64 / elapsed.as_secs_f64();
+                    tracing::info!(fps = fps as u32, "FPS");
+                    *start = Instant::now();
+                }
+            }
         }
 
         Ok(())
@@ -879,9 +893,14 @@ impl OverlayState {
             None
         };
 
-        // store game texture for zero-copy rendering
-        let src_w = if oversized { mode_w } else { orig_w };
-        let src_h = if oversized { mode_h } else { orig_h };
+        // Source texture dimensions for UV math:
+        //  - capturing from a mode-sized FBO (Sodium, virtual FBO):
+        //    use the mode/viewport dims, not the screen dims
+        //  - capturing via PBO from FBO 0 (the OS framebuffer):
+        //    use the screen dims so vp_off centers within them
+        // (matches toolscreen's SubmitFrameCapture(viewport.width, viewport.height).)
+        let src_w: u32 = if source_fbo.is_some() { game_w as u32 } else { orig_w };
+        let src_h: u32 = if source_fbo.is_some() { game_h as u32 } else { orig_h };
         self.game_tex = if game_tex_id != 0 {
             Some((game_tex_id, src_w, src_h))
         } else {
