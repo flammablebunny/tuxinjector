@@ -124,20 +124,14 @@ pub fn resolve_relative_position(
         RelativeTo::BottomRightScreen => (sw - ew - x, sh - eh - y),
         RelativeTo::BottomRightViewport => (vx + vw - ew - x, vy + vh - eh - y),
 
-        // pie chart anchors - the magic numbers (92, 36, 220) come from
-        // MC's debug screen at guiScale=3; we scale them for other scales.
-        // On macOS Retina the framebuffer is 2x, so multiply by display_scale.
+        // pie chart anchors - the magic numbers (92, 36, 220) are absolute
+        // pixel offsets from the bottom-right of the game viewport.
+        // The pie chart is always the same pixel size regardless of gui_scale.
         RelativeTo::PieLeft => {
-            let s = gui_scale as f32 / 3.0 * display_scale;
-            let px = (92.0 * s).round() as i32;
-            let py = (220.0 * s).round() as i32;
-            (vx + vw - px + x, vy + vh - py + y)
+            (vx + vw - 92 + x, vy + vh - 220 + y)
         }
         RelativeTo::PieRight => {
-            let s = gui_scale as f32 / 3.0 * display_scale;
-            let px = (36.0 * s).round() as i32;
-            let py = (220.0 * s).round() as i32;
-            (vx + vw - px + x, vy + vh - py + y)
+            (vx + vw - 36 + x, vy + vh - 220 + y)
         }
     }
 }
@@ -195,7 +189,7 @@ mod tests {
             final_x: 0, final_y: 0,
             final_w: 1920, final_h: 1080,
         };
-        // default guiScale=3, display_scale=1.0 -> offsets 92, 220
+        // absolute pixel offsets, no gui_scale scaling
         let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 1920, 1080, &vp, 0, 0, 3, 1.0);
         assert_eq!((px, py), (1920 - 92, 1080 - 220));
     }
@@ -207,22 +201,22 @@ mod tests {
             final_x: 0, final_y: 0,
             final_w: 1920, final_h: 1080,
         };
-        // guiScale=2 -> 92*2/3=61, 220*2/3=147
+        // same offsets regardless of gui_scale
         let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 1920, 1080, &vp, 0, 0, 2, 1.0);
-        assert_eq!((px, py), (1920 - 61, 1080 - 147));
+        assert_eq!((px, py), (1920 - 92, 1080 - 220));
     }
 
     #[test]
     fn pie_left_anchor_retina() {
-        // macOS Retina 2x: framebuffer is 3840x2160, display_scale=2.0
+        // macOS Retina 2x: framebuffer is 3840x2160
+        // offsets are still absolute pixel offsets in the viewport
         let vp = GameViewportGeometry {
             game_w: 3840, game_h: 2160,
             final_x: 0, final_y: 0,
             final_w: 3840, final_h: 2160,
         };
-        // guiScale=3, display_scale=2.0 -> offsets 92*2=184, 220*2=440
         let (px, py) = resolve_relative_position(RelativeTo::PieLeft, 0, 0, 3840, 2160, &vp, 0, 0, 3, 2.0);
-        assert_eq!((px, py), (3840 - 184, 2160 - 440));
+        assert_eq!((px, py), (3840 - 92, 2160 - 220));
     }
 
     #[test]

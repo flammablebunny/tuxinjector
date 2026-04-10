@@ -1581,8 +1581,8 @@ impl Default for OverlaysConfig {
                     },
                     input: vec![MirrorCaptureConfig { x: 0, y: 0, relative_to: "pieLeft".into() }],
                     output: MirrorRenderConfig {
-                        x: 0, y: 0, scale: 8.0,
-                        relative_to: "centerScreen".into(),
+                        x: 416, y: -38, scale: 8.0,
+                        relative_to: "centerViewport".into(),
                         ..MirrorRenderConfig::default()
                     },
                     ..MirrorConfig::default()
@@ -1610,7 +1610,7 @@ impl Default for OverlaysConfig {
                     },
                     input: vec![MirrorCaptureConfig { x: 0, y: 0, relative_to: "pieLeft".into() }],
                     output: MirrorRenderConfig {
-                        x: 0, y: 0, scale: 8.0,
+                        x: 416, y: 23, scale: 8.0,
                         relative_to: "centerViewport".into(),
                         ..MirrorRenderConfig::default()
                     },

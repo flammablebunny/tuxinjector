@@ -96,9 +96,9 @@ local mirrors = {
             { relativeTo = "pieLeft", x = 0, y = 24 },
         },
         output = {
-            relativeTo = "centerScreen",
-            x = 0,
-            y = 0,
+            relativeTo = "centerViewport",
+            x = 416,
+            y = -38,
             scale = 8.0,
         },
     },
@@ -126,8 +126,8 @@ local mirrors = {
         },
         output = {
             relativeTo = "centerViewport",
-            x = 0,
-            y = 0,
+            x = 416,
+            y = 23,
             scale = 8.0,
         },
     },
