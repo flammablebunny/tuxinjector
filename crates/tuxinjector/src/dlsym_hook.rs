@@ -186,14 +186,22 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         // -- GLX --
         #[cfg(target_os = "linux")]
         b"glXGetProcAddressARB" => {
-            // RTLD_NEXT to skip our own #[no_mangle] PLT export and get
-            // the real glXGetProcAddressARB from libGL/libGLX
-            let real_ptr = real_dlsym()(libc::RTLD_NEXT, symbol);
+            // try RTLD_NEXT first, then dlopen fallback for NVIDIA/mesa split
+            let mut real_ptr = real_dlsym()(libc::RTLD_NEXT, symbol);
+            if real_ptr.is_null() {
+                for lib in &[b"libGLX.so.0\0" as &[u8], b"libGL.so.1\0"] {
+                    let h = libc::dlopen(lib.as_ptr() as *const _, libc::RTLD_LAZY | libc::RTLD_NOLOAD);
+                    if !h.is_null() {
+                        real_ptr = real_dlsym()(h, symbol);
+                        if !real_ptr.is_null() { break; }
+                    }
+                }
+            }
             if !real_ptr.is_null() {
                 gl_resolve::store_glx_get_proc_address(real_ptr);
                 tracing::info!("hooked glXGetProcAddressARB");
             } else {
-                tracing::warn!("glXGetProcAddressARB: RTLD_NEXT returned null");
+                tracing::warn!("glXGetProcAddressARB: could not resolve");
             }
             hooked_egl_get_proc_address as *mut c_void
         }
@@ -248,16 +256,18 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         }
 
         // -- GL viewport & framebuffer hooks --
-        // (LLM made or organised. Im too tired to write all of this stuff right now)
-        b"glViewport"           => hook!(viewport_hook::store_real_gl_viewport, viewport_hook::glViewport),
-        b"glBlitFramebuffer"    => hook!(viewport_hook::store_real_gl_blit_framebuffer, viewport_hook::glBlitFramebuffer),
-        b"glScissor"            => hook!(viewport_hook::store_real_gl_scissor, viewport_hook::glScissor),
-        b"glBindFramebuffer"    => hook!(viewport_hook::store_real_gl_bind_framebuffer, viewport_hook::glBindFramebuffer),
-        b"glBindFramebufferEXT" => hook!(viewport_hook::store_real_gl_bind_framebuffer_ext, viewport_hook::glBindFramebufferEXT),
-        b"glBindFramebufferARB" => hook!(viewport_hook::store_real_gl_bind_framebuffer_arb, viewport_hook::glBindFramebufferARB),
-        b"glDrawBuffer"         => hook!(viewport_hook::store_real_gl_draw_buffer, viewport_hook::glDrawBuffer),
-        b"glReadBuffer"         => hook!(viewport_hook::store_real_gl_read_buffer, viewport_hook::glReadBuffer),
-        b"glDrawBuffers"        => hook!(viewport_hook::store_real_gl_draw_buffers, viewport_hook::glDrawBuffers),
+        // Stash real pointers for our own use, but return the REAL Mesa pointer
+        // to the caller. LWJGL caches Mesa's address directly = zero overhead
+        // in fullscreen. Inline hooks handle interception only when needed.
+        b"glViewport"           => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_viewport(p); } p }
+        b"glBlitFramebuffer"    => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_blit_framebuffer(p); } p }
+        b"glScissor"            => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_scissor(p); } p }
+        b"glBindFramebuffer"    => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_bind_framebuffer(p); } p }
+        b"glBindFramebufferEXT" => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_bind_framebuffer_ext(p); } p }
+        b"glBindFramebufferARB" => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_bind_framebuffer_arb(p); } p }
+        b"glDrawBuffer"         => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_draw_buffer(p); } p }
+        b"glReadBuffer"         => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_read_buffer(p); } p }
+        b"glDrawBuffers"        => { let p = real_dlsym()(handle, symbol); if !p.is_null() { viewport_hook::store_real_gl_draw_buffers(p); } p }
 
         // -- GLFW input callbacks --
         b"glfwSetKeyCallback"             => hook!(tuxinjector_input::callbacks::store_real_set_key_callback, hooked_set_key_callback),
@@ -391,8 +401,10 @@ unsafe extern "C" fn hooked_set_input_mode(window: GlfwWindow, mode: i32, value:
 
 // --- hooked eglGetProcAddress / glXGetProcAddressARB ---
 
-// Same idea as the dlsym hook but for eglGetProcAddress / glXGetProcAddressARB.
-// Intercepts GL function pointer queries so viewport/framebuffer hooks land.
+// GL viewport/framebuffer functions: stash the real pointer for our own use
+// but return the REAL Mesa pointer to LWJGL so it caches Mesa's address
+// directly. Inline hooks handle interception only when needed (non-fullscreen).
+// This gives zero overhead in fullscreen - LWJGL -> Mesa with no indirection.
 #[cfg(target_os = "linux")]
 unsafe extern "C" fn hooked_egl_get_proc_address(name: *const c_char) -> *mut c_void {
     use std::ffi::CStr;
@@ -401,25 +413,26 @@ unsafe extern "C" fn hooked_egl_get_proc_address(name: *const c_char) -> *mut c_
 
     let bytes = CStr::from_ptr(name).to_bytes();
 
-    // resolve real + stash it, return our hook instead
-    macro_rules! gpa_hook {
-        ($store:expr, $hook:expr) => {{
+    // stash the real pointer for our hooks, but return it unchanged to the caller
+    macro_rules! gpa_stash {
+        ($store:expr) => {{
             if let Some(f) = gl_resolve::get_proc_address_fn() {
-                $store(f(name));
+                let real = f(name);
+                if !real.is_null() { $store(real); }
+                return real;
             }
-            return $hook as *mut c_void;
         }};
     }
 
     match bytes {
-        b"glViewport"           => gpa_hook!(viewport_hook::store_real_gl_viewport, viewport_hook::glViewport),
-        b"glScissor"            => gpa_hook!(viewport_hook::store_real_gl_scissor, viewport_hook::glScissor),
-        b"glBindFramebuffer"    => gpa_hook!(viewport_hook::store_real_gl_bind_framebuffer, viewport_hook::glBindFramebuffer),
-        b"glBindFramebufferEXT" => gpa_hook!(viewport_hook::store_real_gl_bind_framebuffer_ext, viewport_hook::glBindFramebufferEXT),
-        b"glBindFramebufferARB" => gpa_hook!(viewport_hook::store_real_gl_bind_framebuffer_arb, viewport_hook::glBindFramebufferARB),
-        b"glDrawBuffer"         => gpa_hook!(viewport_hook::store_real_gl_draw_buffer, viewport_hook::glDrawBuffer),
-        b"glReadBuffer"         => gpa_hook!(viewport_hook::store_real_gl_read_buffer, viewport_hook::glReadBuffer),
-        b"glDrawBuffers"        => gpa_hook!(viewport_hook::store_real_gl_draw_buffers, viewport_hook::glDrawBuffers),
+        b"glViewport"           => gpa_stash!(viewport_hook::store_real_gl_viewport),
+        b"glScissor"            => gpa_stash!(viewport_hook::store_real_gl_scissor),
+        b"glBindFramebuffer"    => gpa_stash!(viewport_hook::store_real_gl_bind_framebuffer),
+        b"glBindFramebufferEXT" => gpa_stash!(viewport_hook::store_real_gl_bind_framebuffer_ext),
+        b"glBindFramebufferARB" => gpa_stash!(viewport_hook::store_real_gl_bind_framebuffer_arb),
+        b"glDrawBuffer"         => gpa_stash!(viewport_hook::store_real_gl_draw_buffer),
+        b"glReadBuffer"         => gpa_stash!(viewport_hook::store_real_gl_read_buffer),
+        b"glDrawBuffers"        => gpa_stash!(viewport_hook::store_real_gl_draw_buffers),
         _ => {}
     }
 

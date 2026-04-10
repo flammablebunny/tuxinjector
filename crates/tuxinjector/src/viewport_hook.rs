@@ -1000,6 +1000,20 @@ static REAL_GL_BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new()
 // rwx copy of Mesa's glViewport, created before we inline-patch it
 static REAL_GL_VIEWPORT_COPY: OnceLock<GlViewportFn> = OnceLock::new();
 
+// Hot-patch state: saved Mesa addresses + original bytes for unpatch/repatch
+#[cfg(target_os = "linux")]
+static VIEWPORT_MESA_ADDR: std::sync::atomic::AtomicPtr<u8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
+static BINDFB_MESA_ADDR: std::sync::atomic::AtomicPtr<u8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
+static VIEWPORT_ORIG_BYTES: OnceLock<[u8; 12]> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static BINDFB_ORIG_BYTES: OnceLock<[u8; 12]> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static HOOKS_PATCHED: AtomicBool = AtomicBool::new(false);
+
 static REAL_GL_GET_INTEGERV: OnceLock<Option<GlGetIntegervFn>> = OnceLock::new();
 
 fn get_gl_get_integerv() -> Option<GlGetIntegervFn> {
@@ -1182,6 +1196,11 @@ unsafe fn build_rip_rel_trampoline(stub: *const u8, prefix_off: usize) -> Option
 }
 
 unsafe fn bind_fb_with(real: GlBindFramebufferFn, target: c_uint, fb: c_uint) {
+    // fast path: not binding FBO 0 or virtual FB not active -> pass through
+    if fb != 0 || !crate::virtual_fb::is_active() {
+        return real(target, fb);
+    }
+
     let mut actual = fb;
     let mut redirected = false;
     if fb == 0 && crate::virtual_fb::should_redirect_default() {
@@ -1294,16 +1313,15 @@ pub unsafe fn install_glviewport_inline_hook() {
         return;
     }
 
+    // save original bytes + mesa address for hot unpatch/repatch
+    let mut orig = [0u8; 12];
+    std::ptr::copy_nonoverlapping(real_mesa, orig.as_mut_ptr(), 12);
+    VIEWPORT_ORIG_BYTES.get_or_init(|| orig);
+    VIEWPORT_MESA_ADDR.store(real_mesa, Ordering::Release);
+
     // write 12-byte absolute jmp over the original function
     let hook_addr = hook_self as u64;
-    let patch: [u8; 12] = [
-        0x48, 0xB8,
-        (hook_addr      ) as u8, (hook_addr >>  8) as u8,
-        (hook_addr >> 16) as u8, (hook_addr >> 24) as u8,
-        (hook_addr >> 32) as u8, (hook_addr >> 40) as u8,
-        (hook_addr >> 48) as u8, (hook_addr >> 56) as u8,
-        0xFF, 0xE0,
-    ];
+    let patch: [u8; 12] = make_jmp_patch(hook_addr);
 
     let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
     let page = (real_mesa as usize) & !(page_sz - 1);
@@ -1315,6 +1333,7 @@ pub unsafe fn install_glviewport_inline_hook() {
     libc::mprotect(page as *mut c_void, page_sz, libc::PROT_READ | libc::PROT_EXEC);
 
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    HOOKS_PATCHED.store(true, Ordering::Release);
     tracing::info!(real_mesa = ?real_mesa, hook = ?hook_addr, "glViewport hook: patched");
 }
 
@@ -1369,15 +1388,14 @@ pub unsafe fn install_glbindframebuffer_inline_hook() {
     let copy_fn: GlBindFramebufferFn = std::mem::transmute(copy_mem);
     REAL_GL_BIND_FRAMEBUFFER_COPY.get_or_init(|| copy_fn);
 
+    // save original bytes + mesa address for hot unpatch/repatch
+    let mut orig = [0u8; 12];
+    std::ptr::copy_nonoverlapping(from_scan, orig.as_mut_ptr(), 12);
+    BINDFB_ORIG_BYTES.get_or_init(|| orig);
+    BINDFB_MESA_ADDR.store(from_scan, Ordering::Release);
+
     let hook_addr = hook_self as u64;
-    let patch: [u8; 12] = [
-        0x48, 0xB8,
-        (hook_addr      ) as u8, (hook_addr >>  8) as u8,
-        (hook_addr >> 16) as u8, (hook_addr >> 24) as u8,
-        (hook_addr >> 32) as u8, (hook_addr >> 40) as u8,
-        (hook_addr >> 48) as u8, (hook_addr >> 56) as u8,
-        0xFF, 0xE0,
-    ];
+    let patch: [u8; 12] = make_jmp_patch(hook_addr);
 
     let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
     let page = (from_scan as usize) & !(page_sz - 1);
@@ -1387,14 +1405,107 @@ pub unsafe fn install_glbindframebuffer_inline_hook() {
     }
 
     std::ptr::copy_nonoverlapping(patch.as_ptr(), from_scan, patch.len());
+    // HOOKS_PATCHED already set by glViewport install
     tracing::info!(real_mesa = ?from_scan, hook = ?hook_addr, copy = ?copy_mem,
         "glBindFramebuffer hook: patched");
+}
+
+#[cfg(target_os = "linux")]
+fn make_jmp_patch(addr: u64) -> [u8; 12] {
+    [
+        0x48, 0xB8,
+        (addr      ) as u8, (addr >>  8) as u8,
+        (addr >> 16) as u8, (addr >> 24) as u8,
+        (addr >> 32) as u8, (addr >> 40) as u8,
+        (addr >> 48) as u8, (addr >> 56) as u8,
+        0xFF, 0xE0,
+    ]
+}
+
+/// Restore original bytes — removes inline hook overhead entirely.
+/// Called when switching to fullscreen (no viewport centering needed).
+#[cfg(target_os = "linux")]
+pub unsafe fn unpatch_inline_hooks() {
+    if !HOOKS_PATCHED.load(Ordering::Relaxed) { return; }
+
+    let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+
+    let vp_addr = VIEWPORT_MESA_ADDR.load(Ordering::Acquire);
+    if let Some(orig) = VIEWPORT_ORIG_BYTES.get() {
+        if !vp_addr.is_null() {
+            let page = (vp_addr as usize) & !(page_sz - 1);
+            libc::mprotect(page as *mut c_void, page_sz,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC);
+            std::ptr::copy_nonoverlapping(orig.as_ptr(), vp_addr, 12);
+            libc::mprotect(page as *mut c_void, page_sz,
+                libc::PROT_READ | libc::PROT_EXEC);
+        }
+    }
+
+    let fb_addr = BINDFB_MESA_ADDR.load(Ordering::Acquire);
+    if let Some(orig) = BINDFB_ORIG_BYTES.get() {
+        if !fb_addr.is_null() {
+            let page = (fb_addr as usize) & !(page_sz - 1);
+            libc::mprotect(page as *mut c_void, page_sz,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC);
+            std::ptr::copy_nonoverlapping(orig.as_ptr(), fb_addr, 12);
+            libc::mprotect(page as *mut c_void, page_sz,
+                libc::PROT_READ | libc::PROT_EXEC);
+        }
+    }
+
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    HOOKS_PATCHED.store(false, Ordering::Release);
+    tracing::info!("inline hooks unpatched (fullscreen — native GL)");
+}
+
+/// Re-apply inline hook patches for viewport centering in non-fullscreen modes.
+#[cfg(target_os = "linux")]
+pub unsafe fn repatch_inline_hooks() {
+    if HOOKS_PATCHED.load(Ordering::Relaxed) { return; }
+
+    let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+
+    let vp_addr = VIEWPORT_MESA_ADDR.load(Ordering::Acquire);
+    if !vp_addr.is_null() && VIEWPORT_ORIG_BYTES.get().is_some() {
+        let patch = make_jmp_patch(hooked_gl_viewport as *const () as u64);
+        let page = (vp_addr as usize) & !(page_sz - 1);
+        libc::mprotect(page as *mut c_void, page_sz,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC);
+        std::ptr::copy_nonoverlapping(patch.as_ptr(), vp_addr, 12);
+        libc::mprotect(page as *mut c_void, page_sz,
+            libc::PROT_READ | libc::PROT_EXEC);
+    }
+
+    let fb_addr = BINDFB_MESA_ADDR.load(Ordering::Acquire);
+    if !fb_addr.is_null() && BINDFB_ORIG_BYTES.get().is_some() {
+        let patch = make_jmp_patch(glBindFramebuffer as *const () as u64);
+        let page = (fb_addr as usize) & !(page_sz - 1);
+        libc::mprotect(page as *mut c_void, page_sz,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC);
+        std::ptr::copy_nonoverlapping(patch.as_ptr(), fb_addr, 12);
+        libc::mprotect(page as *mut c_void, page_sz,
+            libc::PROT_READ | libc::PROT_EXEC);
+    }
+
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    HOOKS_PATCHED.store(true, Ordering::Release);
+    tracing::info!("inline hooks repatched (non-fullscreen mode)");
 }
 
 /// Centers game rendering within the EGL surface during mode resizes
 pub unsafe extern "C" fn hooked_gl_viewport(x: c_int, y: c_int, w: c_int, h: c_int) {
     GL_VIEWPORT_SEEN.store(true, Ordering::Relaxed);
-    let (mw, mh) = unpack(MODE_DIMS.load(Ordering::Acquire));
+
+    // fast path: no mode active or fullscreen (mode == original) → pass through
+    let packed_mode = MODE_DIMS.load(Ordering::Relaxed);
+    if packed_mode == 0 || packed_mode == ORIGINAL_DIMS.load(Ordering::Relaxed) {
+        if let Some(real) = REAL_GL_VIEWPORT_COPY.get().copied() {
+            return real(x, y, w, h);
+        }
+    }
+
+    let (mw, mh) = unpack(packed_mode);
     let (ow, oh) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
     let mode_w = mw as c_int;
     let mode_h = mh as c_int;
@@ -1487,7 +1598,15 @@ pub unsafe extern "C" fn hooked_gl_viewport(x: c_int, y: c_int, w: c_int, h: c_i
 }
 
 pub unsafe extern "C" fn hooked_gl_scissor(x: c_int, y: c_int, w: c_int, h: c_int) {
-    let (mw, mh) = unpack(MODE_DIMS.load(Ordering::Acquire));
+    // fast path: no mode active or fullscreen → pass through
+    let packed_mode = MODE_DIMS.load(Ordering::Relaxed);
+    if packed_mode == 0 || packed_mode == ORIGINAL_DIMS.load(Ordering::Relaxed) {
+        if let Some(real) = REAL_GL_SCISSOR.get().copied() {
+            return real(x, y, w, h);
+        }
+    }
+
+    let (mw, mh) = unpack(packed_mode);
     let (ow, oh) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
     let mode_w = mw as c_int;
     let mode_h = mh as c_int;
@@ -1888,10 +2007,28 @@ pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
         "fire_framebuffer_resize");
 
     // 0 means fullscreen -- hooks revert to pass-through
-    if orig_w > 0 && mode_w == orig_w && mode_h == orig_h {
+    let is_fullscreen = orig_w > 0 && mode_w == orig_w && mode_h == orig_h;
+    if is_fullscreen {
         MODE_DIMS.store(0, Ordering::Release);
     } else {
         MODE_DIMS.store(pack(mode_w, mode_h), Ordering::Release);
+    }
+
+    // hot-patch/unpatch inline hooks based on whether we need viewport centering
+    #[cfg(target_os = "linux")]
+    {
+        if is_fullscreen {
+            unpatch_inline_hooks();
+        } else {
+            // ensure hooks are installed first (idempotent)
+            if REAL_GL_VIEWPORT_COPY.get().is_none() {
+                install_glviewport_inline_hook();
+            }
+            if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_none() {
+                install_glbindframebuffer_inline_hook();
+            }
+            repatch_inline_hooks();
+        }
     }
 
     // resize GL surface before firing callback
@@ -1921,16 +2058,6 @@ pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
 
     let oversized = is_oversized(mode_w, mode_h, orig_w, orig_h);
     if let Some(gl) = crate::state::get().gl.get() {
-        // inline-patch Mesa GL fns so LWJGL3+RTLD_DEEPBIND hits our hooks (Linux x86_64 only)
-        #[cfg(target_os = "linux")]
-        {
-            if !is_gl_viewport_hooked() {
-                install_glviewport_inline_hook();
-            }
-            if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_none() {
-                install_glbindframebuffer_inline_hook();
-            }
-        }
         if oversized {
             crate::virtual_fb::ensure_offscreen(gl, mode_w, mode_h);
         } else if crate::virtual_fb::is_active() {
