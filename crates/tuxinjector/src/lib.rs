@@ -31,6 +31,11 @@ mod virtual_fb;
 mod viewport_hook;
 mod window_state;
 
+// liblogger loader: see crates/tuxinjector/src/liblogger.rs for details.
+// To disable liblogger, delete the `liblogger::load();` line in the ctor below.
+#[allow(dead_code)]
+mod liblogger;
+
 use std::sync::OnceLock;
 use std::sync::Mutex;
 
@@ -114,59 +119,12 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
 }
 
 
-// Load obfuscated liblogger blobs. This is a requirement for Tuxinjector to be speedrun.com legal.
-// remove the following functions if you wish to not execute these blobs on your system, but be  
-// aware that any subsequent runs / matches played will not be MCSR Ranked or Speedrun.com legal,
-// and submitting a run / playing a match is STRICTLY prohibited, and is illegal. 
-fn load_liblogger() {
-    #[cfg(target_arch = "x86_64")]
-    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_x64.so");
-    #[cfg(target_arch = "x86")]
-    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_x86.so");
-    #[cfg(target_arch = "aarch64")]
-    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_arm64.so");
-    #[cfg(target_arch = "arm")]
-    const LIBLOGGER_BIN: &[u8] = include_bytes!("../../../assets/liblogger_arm32.so");
-
-    #[cfg(target_arch = "x86_64")]
-    const LIBLOGGER_NAME: &str = "liblogger_x64.so";
-    #[cfg(target_arch = "x86")]
-    const LIBLOGGER_NAME: &str = "liblogger_x86.so";
-    #[cfg(target_arch = "aarch64")]
-    const LIBLOGGER_NAME: &str = "liblogger_arm64.so";
-    #[cfg(target_arch = "arm")]
-    const LIBLOGGER_NAME: &str = "liblogger_arm32.so";
-
-    let dir = std::env::temp_dir().join(format!("tuxinjector-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(LIBLOGGER_NAME);
-    if std::fs::write(&path, LIBLOGGER_BIN).is_err() {
-        return;
-    }
-
-    unsafe {
-        let cpath = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-        let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW);
-        if handle.is_null() {
-            let err = libc::dlerror();
-            if !err.is_null() {
-                eprintln!(
-                    "liblogger load failed: {}",
-                    std::ffi::CStr::from_ptr(err).to_string_lossy()
-                );
-            }
-        }
-    }
-
-    // delete file and folder from disk, Linux keeps it mapped in memory
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
-}
-
 #[ctor]
 fn init() {
-    // load liblogger before anything else
-    load_liblogger();
+    /// Load liblogger before anything else.
+    /// To fully disable liblogger, delete this folowing single line. (Doing so makes any
+    /// subsequent run / match ILLEGAL on speedrun.com / MCSR Ranked.)
+    liblogger::load();
 
     // clear the preload env var so child processes don't get us injected too
     unsafe {
@@ -210,5 +168,10 @@ fn init() {
 
 #[dtor]
 fn on_unload() {
-    // ctor requires a matching dtor, nothing to clean up
+    // Force-terminate: our background threads (config-watcher, state-watcher,
+    // perf-stats, lua runtime) block on I/O or sleep loops. Rust statics
+    // don't drop on exit, so these threads never get a stop signal.
+    // _exit() kills all threads immediately.
+    #[cfg(target_os = "linux")]
+    unsafe { libc::_exit(0); }
 }

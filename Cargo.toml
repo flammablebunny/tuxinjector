@@ -53,6 +53,9 @@ x11rb = { version = "0.13", features = ["res"] }
 # Init
 ctor = "0.4"
 
+# Hashing (needed for liblogger SHA-512 verification)
+sha2 = "0.11"
+
 # Plugin loading
 libloading = "0.8"
 
