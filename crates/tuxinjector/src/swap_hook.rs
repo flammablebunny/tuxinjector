@@ -486,6 +486,8 @@ const GL_SCISSOR_TEST: u32 = 0x0C11;
 const GL_BACK: u32 = 0x0405;
 const GL_DRAW_BUFFER: u32 = 0x0C01;
 const GL_READ_BUFFER: u32 = 0x0C02;
+const GL_PIXEL_PACK_BUFFER: u32 = 0x88EB;
+const GL_PIXEL_UNPACK_BUFFER: u32 = 0x88EC;
 
 const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: u32 = 0x8CD0;
@@ -849,6 +851,20 @@ unsafe fn render_overlay() {
                 if let Err(e) = overlay.render_and_composite(w, h) {
                     tracing::error!("overlay render failed: {e}");
                 }
+
+                // Glyph-corruption guard. MC's font atlas uploads each glyph
+                // on first use via glTexSubImage2D from a CPU pointer; if any
+                // overlay / GUI (imgui) / mirror path left a buffer bound to
+                // PIXEL_UNPACK_BUFFER, that upload reads from the stale PBO
+                // instead of CPU memory and the glyph caches as garbage
+                // (invisible / semi-transparent) forever. Force both pixel
+                // buffers unbound here — the single choke point every render
+                // path passes through before the real swap — so MC always
+                // regains control with a clean pixel-transfer state. Forcing 0
+                // is safer than restoring a saved binding, which can itself be
+                // stale; MC re-binds any PBO it needs before its own uploads.
+                (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
+                (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, 0);
             } else if let Err(e) = overlay.render_and_composite(w, h) {
                 tracing::error!("overlay render failed: {e}");
             }

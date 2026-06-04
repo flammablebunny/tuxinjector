@@ -121,6 +121,7 @@ gl_fn_type!(PfnGlClearColor           => unsafe fn(r: GLclampf, g: GLclampf, b: 
 gl_fn_type!(PfnGlUseProgram           => unsafe fn(program: GLuint));
 gl_fn_type!(PfnGlGetIntegerv          => unsafe fn(pname: GLenum, data: *mut GLint));
 gl_fn_type!(PfnGlGetString            => unsafe fn(name: GLenum) -> *const c_char);
+gl_fn_type!(PfnGlPixelStorei          => unsafe fn(pname: GLenum, param: GLint));
 
 gl_fn_type!(PfnGlGenVertexArrays      => unsafe fn(n: GLsizei, arrays: *mut GLuint));
 gl_fn_type!(PfnGlBindVertexArray       => unsafe fn(array: GLuint));
@@ -206,6 +207,7 @@ pub struct GlFunctions {
     pub use_program:           PfnGlUseProgram,
     pub get_integer_v:         PfnGlGetIntegerv,
     pub get_string:            PfnGlGetString,
+    pub pixel_store_i:         PfnGlPixelStorei,
     pub create_shader:         PfnGlCreateShader,
     pub shader_source:         PfnGlShaderSource,
     pub compile_shader:        PfnGlCompileShader,
@@ -327,6 +329,7 @@ impl GlFunctions {
             use_program:          resolve!(required gpa, "glUseProgram"),
             get_integer_v:        resolve!(required gpa, "glGetIntegerv"),
             get_string:           resolve!(required gpa, "glGetString"),
+            pixel_store_i:        resolve!(required gpa, "glPixelStorei"),
             create_shader:        resolve!(required gpa, "glCreateShader"),
             shader_source:        resolve!(required gpa, "glShaderSource"),
             compile_shader:       resolve!(required gpa, "glCompileShader"),

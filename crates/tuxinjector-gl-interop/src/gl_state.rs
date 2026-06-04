@@ -27,6 +27,21 @@ pub unsafe fn set_compositor_state(gl: &GlFns, vp: [i32; 4]) {
     (gl.color_mask)(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
     (gl.bind_framebuffer)(GL_FRAMEBUFFER, 0);
     (gl.viewport)(vp[0], vp[1], vp[2], vp[3]);
+
+    // Ensure pixel unpack reads from CPU memory, not from any leftover PBO
+    // (saved & restored at the outer boundary).
+    (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    // Clear any sampler objects MC left bound. A bound sampler (GL 3.3+)
+    // overrides a texture's own min/mag/wrap params; MC 1.21's Blaze3D binds
+    // them, which makes our mip-less LINEAR overlay textures sampler-incomplete
+    // -> they sample pure black even though the CPU upload is fine. MC re-binds
+    // its own samplers per draw, so no restore is needed (same as the PBO above).
+    if let Some(bind_sampler) = gl.bind_sampler {
+        for unit in 0..8u32 {
+            bind_sampler(unit, 0);
+        }
+    }
 }
 
 // Restore what MC usually has at SwapBuffers time.
@@ -188,11 +203,36 @@ pub struct SavedGlState {
     pub scissor_box: [GLint; 4],
     pub color_mask: [GLboolean; 4],
     pub framebuffer: GLint,
+    pub read_framebuffer: GLint,
     pub srgb_on: GLboolean,
     pub unpack_row_length: GLint,
     pub unpack_skip_rows: GLint,
     pub unpack_skip_pixels: GLint,
     pub unpack_alignment: GLint,
+    pub pixel_unpack_buffer: GLint,
+    pub pixel_pack_buffer: GLint,
+
+    // depth state — depth_test disabled alone doesn't reset these
+    pub depth_func: GLint,
+    pub depth_writemask: GLboolean,
+
+    // stencil state (front + back) — disable alone doesn't reset func/op/mask
+    pub stencil_func: GLint,
+    pub stencil_ref: GLint,
+    pub stencil_value_mask: GLint,
+    pub stencil_writemask: GLint,
+    pub stencil_fail: GLint,
+    pub stencil_pass_depth_fail: GLint,
+    pub stencil_pass_depth_pass: GLint,
+    pub stencil_back_func: GLint,
+    pub stencil_back_ref: GLint,
+    pub stencil_back_value_mask: GLint,
+    pub stencil_back_writemask: GLint,
+    pub stencil_back_fail: GLint,
+    pub stencil_back_pass_depth_fail: GLint,
+    pub stencil_back_pass_depth_pass: GLint,
+
+    pub blend_color: [GLfloat; 4],
 }
 
 pub unsafe fn save_gl_state(gl: &GlFns) -> SavedGlState {
@@ -218,11 +258,31 @@ pub unsafe fn save_gl_state(gl: &GlFns) -> SavedGlState {
         scissor_box: [0; 4],
         color_mask: [GL_TRUE; 4],
         framebuffer: 0,
+        read_framebuffer: 0,
         srgb_on: GL_FALSE,
         unpack_row_length: 0,
         unpack_skip_rows: 0,
         unpack_skip_pixels: 0,
         unpack_alignment: 4,
+        pixel_unpack_buffer: 0,
+        pixel_pack_buffer: 0,
+        depth_func: 0x0201, // GL_LESS
+        depth_writemask: GL_TRUE,
+        stencil_func: 0x0207, // GL_ALWAYS
+        stencil_ref: 0,
+        stencil_value_mask: !0,
+        stencil_writemask: !0,
+        stencil_fail: 0x1E00,           // GL_KEEP
+        stencil_pass_depth_fail: 0x1E00, // GL_KEEP
+        stencil_pass_depth_pass: 0x1E00, // GL_KEEP
+        stencil_back_func: 0x0207,
+        stencil_back_ref: 0,
+        stencil_back_value_mask: !0,
+        stencil_back_writemask: !0,
+        stencil_back_fail: 0x1E00,
+        stencil_back_pass_depth_fail: 0x1E00,
+        stencil_back_pass_depth_pass: 0x1E00,
+        blend_color: [0.0; 4],
     };
 
     (gl.get_integer_v)(GL_CURRENT_PROGRAM, &mut st.program);
@@ -258,12 +318,37 @@ pub unsafe fn save_gl_state(gl: &GlFns) -> SavedGlState {
     st.color_mask = [cm[0] as u8, cm[1] as u8, cm[2] as u8, cm[3] as u8];
 
     (gl.get_integer_v)(GL_FRAMEBUFFER_BINDING, &mut st.framebuffer);
+    (gl.get_integer_v)(GL_READ_FRAMEBUFFER_BINDING, &mut st.read_framebuffer);
     st.srgb_on = (gl.is_enabled)(GL_FRAMEBUFFER_SRGB);
 
     (gl.get_integer_v)(GL_UNPACK_ROW_LENGTH, &mut st.unpack_row_length);
     (gl.get_integer_v)(GL_UNPACK_SKIP_ROWS, &mut st.unpack_skip_rows);
     (gl.get_integer_v)(GL_UNPACK_SKIP_PIXELS, &mut st.unpack_skip_pixels);
     (gl.get_integer_v)(GL_UNPACK_ALIGNMENT, &mut st.unpack_alignment);
+    (gl.get_integer_v)(GL_PIXEL_UNPACK_BUFFER_BINDING, &mut st.pixel_unpack_buffer);
+    (gl.get_integer_v)(GL_PIXEL_PACK_BUFFER_BINDING, &mut st.pixel_pack_buffer);
+
+    (gl.get_integer_v)(GL_DEPTH_FUNC, &mut st.depth_func);
+    let mut depth_wm = 0i32;
+    (gl.get_integer_v)(GL_DEPTH_WRITEMASK, &mut depth_wm);
+    st.depth_writemask = if depth_wm != 0 { GL_TRUE } else { GL_FALSE };
+
+    (gl.get_integer_v)(GL_STENCIL_FUNC, &mut st.stencil_func);
+    (gl.get_integer_v)(GL_STENCIL_REF, &mut st.stencil_ref);
+    (gl.get_integer_v)(GL_STENCIL_VALUE_MASK, &mut st.stencil_value_mask);
+    (gl.get_integer_v)(GL_STENCIL_WRITEMASK, &mut st.stencil_writemask);
+    (gl.get_integer_v)(GL_STENCIL_FAIL, &mut st.stencil_fail);
+    (gl.get_integer_v)(GL_STENCIL_PASS_DEPTH_FAIL, &mut st.stencil_pass_depth_fail);
+    (gl.get_integer_v)(GL_STENCIL_PASS_DEPTH_PASS, &mut st.stencil_pass_depth_pass);
+    (gl.get_integer_v)(GL_STENCIL_BACK_FUNC, &mut st.stencil_back_func);
+    (gl.get_integer_v)(GL_STENCIL_BACK_REF, &mut st.stencil_back_ref);
+    (gl.get_integer_v)(GL_STENCIL_BACK_VALUE_MASK, &mut st.stencil_back_value_mask);
+    (gl.get_integer_v)(GL_STENCIL_BACK_WRITEMASK, &mut st.stencil_back_writemask);
+    (gl.get_integer_v)(GL_STENCIL_BACK_FAIL, &mut st.stencil_back_fail);
+    (gl.get_integer_v)(GL_STENCIL_BACK_PASS_DEPTH_FAIL, &mut st.stencil_back_pass_depth_fail);
+    (gl.get_integer_v)(GL_STENCIL_BACK_PASS_DEPTH_PASS, &mut st.stencil_back_pass_depth_pass);
+
+    (gl.get_float_v)(GL_BLEND_COLOR, st.blend_color.as_mut_ptr());
 
     st
 }
@@ -312,7 +397,10 @@ pub unsafe fn restore_gl_state(gl: &GlFns, st: &SavedGlState) {
         st.color_mask[2], st.color_mask[3],
     );
 
-    (gl.bind_framebuffer)(GL_FRAMEBUFFER, st.framebuffer as GLuint);
+    // restore read + draw FBO separately. MC may have different bindings
+    // mid-blit; binding GL_FRAMEBUFFER alone clobbers both to the same value.
+    (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, st.framebuffer as GLuint);
+    (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, st.read_framebuffer as GLuint);
 
     if st.srgb_on != GL_FALSE { (gl.enable)(GL_FRAMEBUFFER_SRGB); }
     else { (gl.disable)(GL_FRAMEBUFFER_SRGB); }
@@ -321,4 +409,48 @@ pub unsafe fn restore_gl_state(gl: &GlFns, st: &SavedGlState) {
     (gl.pixel_store_i)(GL_UNPACK_SKIP_ROWS, st.unpack_skip_rows);
     (gl.pixel_store_i)(GL_UNPACK_SKIP_PIXELS, st.unpack_skip_pixels);
     (gl.pixel_store_i)(GL_UNPACK_ALIGNMENT, st.unpack_alignment);
+
+    // PBO bindings — MC's font atlas upload uses glTexSubImage2D with a CPU
+    // pointer. If we leave any PBO bound to PIXEL_UNPACK_BUFFER, MC's next
+    // upload reads from the PBO instead of CPU memory → corrupt glyph data.
+    (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, st.pixel_unpack_buffer as GLuint);
+    (gl.bind_buffer)(0x88EB /* GL_PIXEL_PACK_BUFFER */, st.pixel_pack_buffer as GLuint);
+
+    (gl.depth_func)(st.depth_func as GLenum);
+    (gl.depth_mask)(st.depth_writemask);
+
+    (gl.stencil_func_separate)(
+        GL_FRONT,
+        st.stencil_func as GLenum,
+        st.stencil_ref,
+        st.stencil_value_mask as GLuint,
+    );
+    (gl.stencil_op_separate)(
+        GL_FRONT,
+        st.stencil_fail as GLenum,
+        st.stencil_pass_depth_fail as GLenum,
+        st.stencil_pass_depth_pass as GLenum,
+    );
+    (gl.stencil_mask_separate)(GL_FRONT, st.stencil_writemask as GLuint);
+
+    (gl.stencil_func_separate)(
+        GL_BACK,
+        st.stencil_back_func as GLenum,
+        st.stencil_back_ref,
+        st.stencil_back_value_mask as GLuint,
+    );
+    (gl.stencil_op_separate)(
+        GL_BACK,
+        st.stencil_back_fail as GLenum,
+        st.stencil_back_pass_depth_fail as GLenum,
+        st.stencil_back_pass_depth_pass as GLenum,
+    );
+    (gl.stencil_mask_separate)(GL_BACK, st.stencil_back_writemask as GLuint);
+
+    (gl.blend_color)(
+        st.blend_color[0],
+        st.blend_color[1],
+        st.blend_color[2],
+        st.blend_color[3],
+    );
 }

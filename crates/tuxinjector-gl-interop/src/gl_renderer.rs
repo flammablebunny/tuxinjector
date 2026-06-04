@@ -315,10 +315,6 @@ struct FilterLocs {
 
 // ---- GlOverlayRenderer ----
 
-// How often (in frames) we re-query the game's GL state for corrections.
-// State at SwapBuffers is pretty stable per-screen, so no need to do it every frame.
-const STATE_CACHE_INTERVAL: u64 = 120;
-
 // Compiled custom fragment shader with cached locations
 struct CustomProgram {
     id: GLuint,
@@ -355,7 +351,6 @@ pub struct GlOverlayRenderer {
 
     // cached game state for zero-query restore on most frames
     cached_state: Option<gl_state::TargetedGlState>,
-    state_frame: u64,
 }
 
 impl GlOverlayRenderer {
@@ -459,7 +454,6 @@ impl GlOverlayRenderer {
             pool_idx: 0,
             custom_progs: HashMap::new(),
             cached_state: None,
-            state_frame: 0,
         })
     }
 
@@ -531,13 +525,12 @@ impl GlOverlayRenderer {
 
         let vp = [0, 0, vp_w as GLint, vp_h as GLint];
 
-        // periodically re-query the game's state so our corrections stay accurate
-        if self.cached_state.is_none()
-            || self.state_frame % STATE_CACHE_INTERVAL == 0
-        {
-            self.cached_state = Some(gl_state::save_targeted_state(gl));
-        }
-        self.state_frame += 1;
+        // Full save before clobbering state. The previous fast/targeted path
+        // missed scissor box, color mask, VAO, active texture, program, and
+        // buffer bindings - MC 1.21+ (and newer) caches these inside its
+        // RenderSystem, so leaving them desynced makes title-screen buttons
+        // render translucent and clips characters away in text rendering.
+        let saved_full = gl_state::save_gl_state(gl);
 
         gl_state::set_compositor_state(gl, vp);
 
@@ -564,17 +557,6 @@ impl GlOverlayRenderer {
             tracing::info!(quad_vao = self.quad_vao, draw_err = e,
                 "draw_scene: VAO test (0=ok)");
         });
-
-        // every ~300 frames, log what we're actually drawing
-        if self.state_frame % 300 == 1 {
-            let n_solid = elements.iter().filter(|e| matches!(e, SceneElement::SolidRect { .. })).count();
-            let n_grad = elements.iter().filter(|e| matches!(e, SceneElement::Gradient { .. })).count();
-            let n_tex = elements.iter().filter(|e| matches!(e, SceneElement::Textured { .. })).count();
-            let n_ref = elements.iter().filter(|e| matches!(e, SceneElement::TextureRef { .. })).count();
-            let n_border = elements.iter().filter(|e| matches!(e, SceneElement::Border { .. })).count();
-            tracing::info!(n_solid, n_grad, n_tex, n_ref, n_border, total = elements.len(),
-                vp_w, vp_h, "draw_scene: element breakdown");
-        }
 
         // reset pixel unpack - Sodium sometimes leaves garbage here
         (gl.pixel_store_i)(GL_UNPACK_ROW_LENGTH, 0);
@@ -674,12 +656,11 @@ impl GlOverlayRenderer {
             }
         }
 
-        // fast restore + targeted corrections for things MC does differently
-        gl_state::restore_minecraft_state(gl, vp);
-
-        if let Some(ref cached) = self.cached_state {
-            gl_state::restore_targeted_corrections(gl, cached);
-        }
+        // Full restore: reverts every piece of state we saved before
+        // touching anything. Replaces the previous fast-restore + targeted-
+        // corrections combo which missed scissor / color_mask / VAO / etc.
+        // and only re-queried MC's state periodically.
+        gl_state::restore_gl_state(gl, &saved_full);
     }
 
     /// Force re-query next frame (e.g. after a resolution change)

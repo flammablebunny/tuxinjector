@@ -24,6 +24,49 @@ const GL_CLAMP_TO_EDGE: u32 = 0x812F;
 const GL_PIXEL_PACK_BUFFER: u32 = 0x88EB;
 const GL_STREAM_READ: u32 = 0x88E1;
 const GL_READ_ONLY: u32 = 0x88B8;
+// PACK pixel-store state — MC 1.21+ Blaze3D leaves GL_PACK_ROW_LENGTH set on the
+// shared context, which inflates glReadPixels' computed packed size past our
+// tightly-sized PBO → GL_INVALID_OPERATION (out of bounds PBO access).
+const GL_PACK_ROW_LENGTH: u32 = 0x0D02;
+const GL_PACK_SKIP_ROWS: u32 = 0x0D03;
+const GL_PACK_SKIP_PIXELS: u32 = 0x0D04;
+const GL_PACK_ALIGNMENT: u32 = 0x0D05;
+
+// PACK pixel-store save/set/restore. We must reset PACK state to a tight pack
+// before our readbacks (the game leaves GL_PACK_ROW_LENGTH set, which overflows
+// our exactly-sized PBO / client buffer). But this change MUST NOT leak to the
+// game: restore_gl_state only saves/restores UNPACK state, and mirror capture
+// runs *outside* that window anyway, so a leaked PACK change reaches MC's
+// font-atlas path and corrupts glyphs. Save MC's values, set ours, restore.
+struct PackState {
+    row_length: i32,
+    skip_rows: i32,
+    skip_pixels: i32,
+    alignment: i32,
+}
+
+unsafe fn save_pack_state(gl: &GlFunctions) -> PackState {
+    let mut s = PackState { row_length: 0, skip_rows: 0, skip_pixels: 0, alignment: 4 };
+    (gl.get_integer_v)(GL_PACK_ROW_LENGTH, &mut s.row_length);
+    (gl.get_integer_v)(GL_PACK_SKIP_ROWS, &mut s.skip_rows);
+    (gl.get_integer_v)(GL_PACK_SKIP_PIXELS, &mut s.skip_pixels);
+    (gl.get_integer_v)(GL_PACK_ALIGNMENT, &mut s.alignment);
+    s
+}
+
+unsafe fn set_tight_pack_state(gl: &GlFunctions) {
+    (gl.pixel_store_i)(GL_PACK_ROW_LENGTH, 0);
+    (gl.pixel_store_i)(GL_PACK_SKIP_ROWS, 0);
+    (gl.pixel_store_i)(GL_PACK_SKIP_PIXELS, 0);
+    (gl.pixel_store_i)(GL_PACK_ALIGNMENT, 4);
+}
+
+unsafe fn restore_pack_state(gl: &GlFunctions, s: &PackState) {
+    (gl.pixel_store_i)(GL_PACK_ROW_LENGTH, s.row_length);
+    (gl.pixel_store_i)(GL_PACK_SKIP_ROWS, s.skip_rows);
+    (gl.pixel_store_i)(GL_PACK_SKIP_PIXELS, s.skip_pixels);
+    (gl.pixel_store_i)(GL_PACK_ALIGNMENT, s.alignment);
+}
 
 // --- CaptureTarget ---
 
@@ -189,7 +232,13 @@ impl MirrorCaptureState {
         // kick off async readback into current PBO
         (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, self.tgt.fbo);
         (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, wr_pbo);
+        // Tight-pack the readback so the game's leftover GL_PACK_ROW_LENGTH can't
+        // overflow our exactly-sized PBO. Save & restore MC's PACK state so the
+        // change never leaks to its glyph upload (see PackState comment above).
+        let saved_pack = save_pack_state(gl);
+        set_tight_pack_state(gl);
         (gl.read_pixels)(0, 0, dw, dh, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null_mut());
+        restore_pack_state(gl, &saved_pack);
 
         // map *previous* PBO to get last frame's data
         if self.tgt.frame_cnt > 0 {
@@ -264,6 +313,12 @@ impl MirrorCaptureState {
 
         self.multi_px.clear();
 
+        // Tight-pack the readbacks below (game's leftover GL_PACK_ROW_LENGTH would
+        // overrun our exactly-sized client buffers). Save MC's PACK state once and
+        // restore after the loop so the change never leaks to its glyph upload.
+        let saved_pack = save_pack_state(gl);
+        set_tight_pack_state(gl);
+
         for &(sx, sy) in inputs {
             (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, read_fbo);
             (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, self.tgt.fbo);
@@ -302,6 +357,7 @@ impl MirrorCaptureState {
             self.multi_px.push(buf);
         }
 
+        restore_pack_state(gl, &saved_pack);
         self.multi_dirty = true;
     }
 

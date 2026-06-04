@@ -104,6 +104,35 @@ pub const GL_FRAMEBUFFER_BINDING: GLenum = 0x8CA6;
 pub const GL_FRAMEBUFFER_SRGB: GLenum = 0x8DB9;
 pub const GL_COLOR_WRITEMASK: GLenum = 0x0C23;
 
+// Additional state we save/restore so MC 1.21+ RenderSystem caches stay in
+// sync with actual GL state. Without these, certain glyphs (numbers/letters) / draw calls
+// in game/chat/debug menus silently render with the wrong state, or dont render at all.
+pub const GL_DEPTH_FUNC: GLenum = 0x0B74;
+pub const GL_DEPTH_WRITEMASK: GLenum = 0x0B72;
+pub const GL_STENCIL_FUNC: GLenum = 0x0B92;
+pub const GL_STENCIL_REF: GLenum = 0x0B97;
+pub const GL_STENCIL_VALUE_MASK: GLenum = 0x0B93;
+pub const GL_STENCIL_WRITEMASK: GLenum = 0x0B98;
+pub const GL_STENCIL_FAIL: GLenum = 0x0B94;
+pub const GL_STENCIL_PASS_DEPTH_FAIL: GLenum = 0x0B95;
+pub const GL_STENCIL_PASS_DEPTH_PASS: GLenum = 0x0B96;
+pub const GL_STENCIL_BACK_FUNC: GLenum = 0x8800;
+pub const GL_STENCIL_BACK_REF: GLenum = 0x8CA3;
+pub const GL_STENCIL_BACK_VALUE_MASK: GLenum = 0x8CA4;
+pub const GL_STENCIL_BACK_WRITEMASK: GLenum = 0x8CA5;
+pub const GL_STENCIL_BACK_FAIL: GLenum = 0x8801;
+pub const GL_STENCIL_BACK_PASS_DEPTH_FAIL: GLenum = 0x8802;
+pub const GL_STENCIL_BACK_PASS_DEPTH_PASS: GLenum = 0x8803;
+pub const GL_BLEND_COLOR: GLenum = 0x8005;
+pub const GL_FRONT: GLenum = 0x0404;
+pub const GL_BACK: GLenum = 0x0405;
+pub const GL_DRAW_FRAMEBUFFER: GLenum = 0x8CA9;
+pub const GL_READ_FRAMEBUFFER: GLenum = 0x8CA8;
+pub const GL_READ_FRAMEBUFFER_BINDING: GLenum = 0x8CAA;
+pub const GL_PIXEL_UNPACK_BUFFER: GLenum = 0x88EC;
+pub const GL_PIXEL_UNPACK_BUFFER_BINDING: GLenum = 0x88EF;
+pub const GL_PIXEL_PACK_BUFFER_BINDING: GLenum = 0x88ED;
+
 pub const GL_TEXTURE0: GLenum = 0x84C0;
 
 pub const GL_FRAMEBUFFER: GLenum = 0x8D40;
@@ -139,6 +168,7 @@ gl_fn_type!(PfnGlTexImage2D           => unsafe fn(target: GLenum, level: GLint,
 gl_fn_type!(PfnGlTexSubImage2D        => unsafe fn(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, width: GLsizei, height: GLsizei, format: GLenum, ty: GLenum, pixels: *const c_void));
 gl_fn_type!(PfnGlTexParameteri        => unsafe fn(target: GLenum, pname: GLenum, param: GLint));
 gl_fn_type!(PfnGlActiveTexture        => unsafe fn(texture: GLenum));
+gl_fn_type!(PfnGlBindSampler          => unsafe fn(unit: GLuint, sampler: GLuint));
 
 // State
 gl_fn_type!(PfnGlEnable               => unsafe fn(cap: GLenum));
@@ -149,6 +179,13 @@ gl_fn_type!(PfnGlBlendEquationSeparate => unsafe fn(mode_rgb: GLenum, mode_alpha
 gl_fn_type!(PfnGlViewport             => unsafe fn(x: GLint, y: GLint, width: GLsizei, height: GLsizei));
 gl_fn_type!(PfnGlScissor              => unsafe fn(x: GLint, y: GLint, width: GLsizei, height: GLsizei));
 gl_fn_type!(PfnGlColorMask            => unsafe fn(r: GLboolean, g: GLboolean, b: GLboolean, a: GLboolean));
+gl_fn_type!(PfnGlDepthFunc            => unsafe fn(func: GLenum));
+gl_fn_type!(PfnGlDepthMask            => unsafe fn(flag: GLboolean));
+gl_fn_type!(PfnGlStencilFuncSeparate  => unsafe fn(face: GLenum, func: GLenum, ref_: GLint, mask: GLuint));
+gl_fn_type!(PfnGlStencilOpSeparate    => unsafe fn(face: GLenum, sfail: GLenum, dpfail: GLenum, dppass: GLenum));
+gl_fn_type!(PfnGlStencilMaskSeparate  => unsafe fn(face: GLenum, mask: GLuint));
+gl_fn_type!(PfnGlBlendColor           => unsafe fn(red: GLfloat, green: GLfloat, blue: GLfloat, alpha: GLfloat));
+gl_fn_type!(PfnGlGetFloatv            => unsafe fn(pname: GLenum, data: *mut GLfloat));
 
 // Shaders/Programs
 gl_fn_type!(PfnGlUseProgram           => unsafe fn(program: GLuint));
@@ -228,6 +265,10 @@ pub struct GlFns {
     pub tex_sub_image_2d: PfnGlTexSubImage2D,
     pub tex_parameter_i: PfnGlTexParameteri,
     pub active_texture: PfnGlActiveTexture,
+    // GL 3.3+: a bound sampler object overrides a texture's own params. MC 1.21's
+    // Blaze3D binds these; if we don't clear it our mip-less textures become
+    // sampler-incomplete and sample black. Optional in case of an ancient context.
+    pub bind_sampler: Option<PfnGlBindSampler>,
 
     // State
     pub enable: PfnGlEnable,
@@ -238,6 +279,13 @@ pub struct GlFns {
     pub viewport: PfnGlViewport,
     pub scissor: PfnGlScissor,
     pub color_mask: PfnGlColorMask,
+    pub depth_func: PfnGlDepthFunc,
+    pub depth_mask: PfnGlDepthMask,
+    pub stencil_func_separate: PfnGlStencilFuncSeparate,
+    pub stencil_op_separate: PfnGlStencilOpSeparate,
+    pub stencil_mask_separate: PfnGlStencilMaskSeparate,
+    pub blend_color: PfnGlBlendColor,
+    pub get_float_v: PfnGlGetFloatv,
 
     // Shaders/Programs
     pub use_program: PfnGlUseProgram,
@@ -351,6 +399,7 @@ impl GlFns {
             tex_sub_image_2d: resolve!(required get_proc, "glTexSubImage2D"),
             tex_parameter_i: resolve!(required get_proc, "glTexParameteri"),
             active_texture: resolve!(required get_proc, "glActiveTexture"),
+            bind_sampler: resolve!(optional get_proc, "glBindSampler"),
 
             // State
             enable: resolve!(required get_proc, "glEnable"),
@@ -361,6 +410,13 @@ impl GlFns {
             viewport: resolve!(required get_proc, "glViewport"),
             scissor: resolve!(required get_proc, "glScissor"),
             color_mask: resolve!(required get_proc, "glColorMask"),
+            depth_func: resolve!(required get_proc, "glDepthFunc"),
+            depth_mask: resolve!(required get_proc, "glDepthMask"),
+            stencil_func_separate: resolve!(required get_proc, "glStencilFuncSeparate"),
+            stencil_op_separate: resolve!(required get_proc, "glStencilOpSeparate"),
+            stencil_mask_separate: resolve!(required get_proc, "glStencilMaskSeparate"),
+            blend_color: resolve!(required get_proc, "glBlendColor"),
+            get_float_v: resolve!(required get_proc, "glGetFloatv"),
 
             // Shaders/Programs
             use_program: resolve!(required get_proc, "glUseProgram"),
