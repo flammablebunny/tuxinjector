@@ -23,7 +23,7 @@ use std::process::Command;
 
 const LEGAL_DLLS_URL: &str = "https://raw.githubusercontent.com/Minecraft-Java-Edition-Speedrunning/legal-builds/main/legal-dlls.csv";
 
-const TOOLSCREEN_RELEASE_BASE: &str = "https://github.com/jojoe77777/Toolscreen/releases/download/liblogger-signed-latest";
+const TOOLSCREEN_RELEASE_BASE: &str = "https://github.com/jojoe77777/Toolscreen/releases/download/liblogger-legal";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
