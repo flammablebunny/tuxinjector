@@ -280,6 +280,7 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         b"glfwSetWindowSizeCallback"      => hook!(viewport_hook::store_real_set_win_size_cb, viewport_hook::hooked_glfw_set_window_size_callback),
         b"glfwGetFramebufferSize"         => hook!(viewport_hook::store_real_get_fb_size, viewport_hook::hooked_glfw_get_framebuffer_size),
         b"glfwSetInputMode"               => hook!(tuxinjector_input::callbacks::store_real_set_input_mode, hooked_set_input_mode),
+        b"glfwSetClipboardString"         => hook!(crate::glfw_hook::store_real_set_clipboard_string, crate::glfw_hook::glfwSetClipboardString),
 
         // GLFW cursor/key poll - warn if not found since these are important
         b"glfwGetKey" => {

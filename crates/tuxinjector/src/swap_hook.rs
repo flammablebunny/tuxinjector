@@ -296,6 +296,38 @@ fn reap_children() {
     });
 }
 
+// Library destructor — fires at the start of the game's exit sequence
+// (before dynamic linker tears down shared state and before PR_SET_PDEATHSIG
+// delivers its own signal). We SIGTERM every tracked child so companion
+// apps (ninjabrainbot, etc.) get their shutdown hooks running EARLY,
+// while the display server / HOME / filesystem are all still healthy.
+//
+// Fire-and-forget: children run their shutdown hooks in parallel with the
+// rest of the game's teardown. PR_SET_PDEATHSIG covers anyone we miss.
+#[cfg(target_os = "linux")]
+extern "C" fn graceful_child_shutdown() {
+    // Lua tx.exec() children
+    if let Ok(guard) = EXEC_CHILDREN.lock() {
+        for (child, _) in guard.iter() {
+            let pid = child.id();
+            if pid > 0 {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+            }
+        }
+    }
+    // GUI-launched companion apps
+    for app in tuxinjector_gui::running_apps::list() {
+        if app.pid > 0 {
+            unsafe { libc::kill(app.pid as libc::pid_t, libc::SIGTERM); }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[used]
+#[link_section = ".fini_array"]
+static GRACEFUL_CHILD_SHUTDOWN: extern "C" fn() = graceful_child_shutdown;
+
 // dispatch pending commands from the Lua runtime (called each frame)
 fn process_lua_commands() {
     reap_children();

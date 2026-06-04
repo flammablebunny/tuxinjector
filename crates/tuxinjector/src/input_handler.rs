@@ -185,9 +185,9 @@ impl InputHandler for TuxinjectorInputHandler {
     fn handle_key(&mut self, key: i32, scancode: i32, action: i32, mods: i32) -> (bool, i32) {
         self.maybe_reload();
 
-        // forward key presses to embedded companion apps via stdin
-        if action == 1 {
-            crate::app_capture::push_app_key(key, scancode, mods, true);
+        // forward key press/release to embedded companion apps (XTEST injection)
+        if action == 1 || action == 0 {
+            crate::app_capture::push_app_key(key, scancode, mods, action == 1);
         }
 
         let orig = key;

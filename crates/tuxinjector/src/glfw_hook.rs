@@ -256,6 +256,67 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
     real(window, physical)
 }
 
+// --- glfwGetKeyScancode ---
+//
+// Minecraft/LWJGL3 use this to look up the scancode for a given GLFW key
+// (e.g. to compare against stored keybindings). We stash the real pointer
+// for the callback to use when rewriting scancode on rebinds, and export
+// a thin hook that just forwards the query -- the rewrite has already
+// happened at the callback layer.
+type GlfwGetKeyScancodeFn = unsafe extern "C" fn(c_int) -> c_int;
+
+static REAL_GET_KEY_SCANCODE_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+pub fn store_real_get_key_scancode(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_GET_KEY_SCANCODE_PTR.store(ptr, Ordering::Release);
+        // Also hand the pointer to the input crate so its key callback can
+        // rewrite scancodes inline.
+        tuxinjector_input::callbacks::store_real_get_key_scancode(ptr);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn glfwGetKeyScancode(key: c_int) -> c_int {
+    let ptr = REAL_GET_KEY_SCANCODE_PTR.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return 0;
+    }
+    let real: GlfwGetKeyScancodeFn = std::mem::transmute(ptr);
+    real(key)
+}
+
+// --- glfwSetClipboardString ---
+//
+// Mirror Minecraft's clipboard writes (e.g. the F3+C coordinate copy) into tux's
+// companion Xvfb so stock Ninjabrain Bot, which reads the X clipboard, receives
+// them — NBB runs on a different X server than the game. We still forward to the
+// real glfwSetClipboardString so the host clipboard keeps working too.
+type GlfwSetClipboardStringFn = unsafe extern "C" fn(GlfwWindow, *const c_char);
+
+static REAL_SET_CLIPBOARD_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+pub fn store_real_set_clipboard_string(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_SET_CLIPBOARD_PTR.store(ptr, Ordering::Release);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn glfwSetClipboardString(window: GlfwWindow, string: *const c_char) {
+    #[cfg(target_os = "linux")]
+    if !string.is_null() {
+        if let Ok(s) = std::ffi::CStr::from_ptr(string).to_str() {
+            crate::companion_clipboard::set_clipboard(s.to_string());
+        }
+    }
+    let ptr = REAL_SET_CLIPBOARD_PTR.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        let real: GlfwSetClipboardStringFn = std::mem::transmute(ptr);
+        real(window, string);
+    }
+}
+
 // --- glfwGetMouseButton ---
 
 type GlfwGetMouseButtonFn = unsafe extern "C" fn(GlfwWindow, c_int) -> c_int;

@@ -4,14 +4,14 @@
 // because AWT stops repainting after composite redirect on XWayland.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt as ResExt};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ChangeWindowAttributesAux, ConfigureWindowAux, ConnectionExt as XprotoExt,
-    ImageFormat, PropMode, Window,
+    Atom, AtomEnum, ConnectionExt as XprotoExt, ImageFormat, PropMode, Window,
 };
+use x11rb::protocol::xtest::ConnectionExt as XtestExt;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -19,89 +19,26 @@ type X11Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 
-// Key events queued for forwarding to companion apps via stdin.
-// (x11_keycode, x11_modifier_mask, jnh_keycode)
-// Next function is llm assisted or wtv
-static APP_KEY_QUEUE: std::sync::Mutex<Vec<(u8, u16, i32)>> = std::sync::Mutex::new(Vec::new());
+// Key events queued for XTEST injection into tux's private Xvfb. Each entry is
+// an (X keycode, pressed) pair, replayed as a real X KeyPress/KeyRelease so the
+// app's JNativeHook (XRecord) global hotkeys fire — which they do on a server
+// tux owns, unlike the host Xwayland.
+static APP_KEY_QUEUE: std::sync::Mutex<Vec<(u8, bool)>> = std::sync::Mutex::new(Vec::new());
 
-/// Queue a key press for forwarding to companion apps via stdin.
-/// `key` is the GLFW key constant, `scancode` is the X11 keycode.
-pub fn push_app_key(key: i32, scancode: i32, mods: i32, pressed: bool) {
-    if !pressed { return; }
-    if scancode <= 0 || scancode > 255 { return; }
-    let x11_mods = glfw_mods_to_x11(mods);
-    let jnh_code = glfw_key_to_jnh(key);
-    if let Ok(mut q) = APP_KEY_QUEUE.lock() {
-        q.push((scancode as u8, x11_mods, jnh_code));
+// GLFW (Wayland backend) reports evdev scancodes; the X11 keycode is evdev + 8.
+// NBB's JNativeHook reports that same X keycode as each hotkey's rawCode, so the
+// injected keycode matches the stored binding directly — no GLFW→JNH table.
+const EVDEV_X_KEYCODE_OFFSET: i32 = 8;
+
+/// Queue a key press/release for XTEST injection into companion apps (e.g. NBB).
+/// `scancode` is the GLFW (evdev) scancode; we convert it to the X11 keycode.
+pub fn push_app_key(_key: i32, scancode: i32, _mods: i32, pressed: bool) {
+    let keycode = scancode + EVDEV_X_KEYCODE_OFFSET;
+    if scancode <= 0 || keycode > 255 {
+        return;
     }
-}
-
-fn glfw_mods_to_x11(mods: i32) -> u16 {
-    let mut s = 0u16;
-    if mods & 0x1 != 0 { s |= 1; }   // Shift
-    if mods & 0x2 != 0 { s |= 4; }   // Control
-    if mods & 0x4 != 0 { s |= 8; }   // Alt → Mod1
-    if mods & 0x8 != 0 { s |= 64; }  // Super → Mod4
-    s
-}
-
-/// Convert GLFW key constant to JNativeHook virtual keycode (AT scancode set 1).
-/// Returns -1 for unknown keys. This lets NBB match hotkeys without rawCode storage.
-fn glfw_key_to_jnh(key: i32) -> i32 {
-    match key {
-        256 => 0x0001,  // Escape
-        290 => 0x003B, 291 => 0x003C, 292 => 0x003D, 293 => 0x003E, // F1-F4
-        294 => 0x003F, 295 => 0x0040, 296 => 0x0041, 297 => 0x0042, // F5-F8
-        298 => 0x0043, 299 => 0x0044, 300 => 0x0057, 301 => 0x0058, // F9-F12
-
-        96  => 0x0029, // `
-        49  => 0x0002, 50 => 0x0003, 51 => 0x0004, 52 => 0x0005, // 1-4
-        53  => 0x0006, 54 => 0x0007, 55 => 0x0008, 56 => 0x0009, // 5-8
-        57  => 0x000A, 48 => 0x000B, // 9, 0
-        45  => 0x000C, // -
-        61  => 0x000D, // =
-        259 => 0x000E, // Backspace
-
-        258 => 0x000F, // Tab
-        81  => 0x0010, 87 => 0x0011, 69 => 0x0012, 82 => 0x0013, // Q W E R
-        84  => 0x0014, 89 => 0x0015, 85 => 0x0016, 73 => 0x0017, // T Y U I
-        79  => 0x0018, 80 => 0x0019, // O P
-        91  => 0x001A, 93 => 0x001B, 92 => 0x002B, // [ ] backslash
-
-        280 => 0x003A, // Caps Lock
-        65  => 0x001E, 83 => 0x001F, 68 => 0x0020, 70 => 0x0021, // A S D F
-        71  => 0x0022, 72 => 0x0023, 74 => 0x0024, 75 => 0x0025, // G H J K
-        76  => 0x0026, 59 => 0x0027, 39 => 0x0028, // L ; '
-        257 => 0x001C, // Enter
-
-        90  => 0x002C, 88 => 0x002D, 67 => 0x002E, 86 => 0x002F, // Z X C V
-        66  => 0x0030, 78 => 0x0031, 77 => 0x0032, // B N M
-        44  => 0x0033, 46 => 0x0034, 47 => 0x0035, // , . /
-
-        340 => 0x002A, 344 => 0x0036, // L/R Shift
-        341 => 0x001D, 345 => 0x0E1D, // L/R Control
-        342 => 0x0038, 346 => 0x0E38, // L/R Alt
-        32  => 0x0039, // Space
-
-        // Numpad
-        282 => 0x0045,   // Num Lock
-        331 => 0x0E35,   // KP /
-        332 => 0x0037,   // KP *
-        333 => 0x004A,   // KP -
-        334 => 0x004E,   // KP +
-        335 => 0x0E1C,   // KP Enter
-        330 => 0x0053,   // KP .
-        320 => 0x0052, 321 => 0x004F, 322 => 0x0050, 323 => 0x0051, // KP 0-3
-        324 => 0x004B, 325 => 0x004C, 326 => 0x004D, // KP 4-6
-        327 => 0x0047, 328 => 0x0048, 329 => 0x0049, // KP 7-9
-
-        // Navigation
-        265 => 0xE048, 264 => 0xE050, 263 => 0xE04B, 262 => 0xE04D, // Up Down Left Right
-        266 => 0xE049, 267 => 0xE051, // Page Up, Page Down
-        268 => 0xE047, 269 => 0xE04F, // Home, End
-        260 => 0xE052, 261 => 0xE053, // Insert, Delete
-
-        _ => -1,
+    if let Ok(mut q) = APP_KEY_QUEUE.lock() {
+        q.push((keycode as u8, pressed));
     }
 }
 
@@ -127,8 +64,6 @@ struct EmbeddedWindow {
     pixels: Option<Vec<u8>>,
     width: u32,
     height: u32,
-    last_capture: Instant,
-    sibling_windows: Vec<Window>,
     // background capture thread writes here
     bg_pixels: Option<std::sync::Arc<std::sync::Mutex<BgCapture>>>,
     last_bg_gen: u64,
@@ -177,31 +112,34 @@ impl AppCaptureManager {
 
     pub fn toggle_visibility(&mut self) {
         self.visible = !self.visible;
-        tracing::info!(visible = self.visible, "toggled anchored app visibility");
+        tracing::debug!(visible = self.visible, "toggled anchored app visibility");
     }
 
-    /// Forward queued key events to all companion apps (anchored + detached) via stdin.
-    /// Stdin is the primary key delivery mechanism — JNativeHook/XRecord is unreliable
-    /// on XWayland for certain keys.
-    pub fn forward_pending_keys(&self) {
-        let all_pids: Vec<u32> = tuxinjector_gui::running_apps::list()
-            .iter()
-            .map(|a| a.pid)
-            .collect();
-        if all_pids.is_empty() { return; }
-
-        let events: Vec<(u8, u16, i32)> = match APP_KEY_QUEUE.lock() {
+    /// Inject queued key press/release events into tux's private Xvfb via XTEST.
+    /// Stock companion apps (NBB) receive real X KeyPress/KeyRelease there, so
+    /// their JNativeHook/XRecord global hotkeys fire — no stdin patch needed.
+    /// This works only because tux is the X authority on that server (it does
+    /// NOT work on the host Xwayland, where these events are never delivered).
+    pub fn forward_pending_keys(&mut self) {
+        let events: Vec<(u8, bool)> = match APP_KEY_QUEUE.lock() {
             Ok(mut q) => q.drain(..).collect(),
             Err(_) => return,
         };
         if events.is_empty() { return; }
+        if tuxinjector_gui::running_apps::list().is_empty() { return; }
+        if !self.ensure_connected() { return; }
 
-        for (keycode, mods, jnh_code) in &events {
-            let line = format!("KEY {} {} {}\n", keycode, mods, jnh_code);
-            for &pid in &all_pids {
-                tuxinjector_gui::running_apps::write_stdin(pid, line.as_bytes());
-            }
+        let conn = match self.conn.as_ref() { Some(c) => c, None => return };
+        let root = conn.setup().roots[self.screen_num].root;
+
+        // X protocol event codes: KeyPress = 2, KeyRelease = 3.
+        const X_KEY_PRESS: u8 = 2;
+        const X_KEY_RELEASE: u8 = 3;
+        for (keycode, pressed) in &events {
+            let type_ = if *pressed { X_KEY_PRESS } else { X_KEY_RELEASE };
+            let _ = conn.xtest_fake_input(type_, *keycode, 0, root, 0, 0, 0);
         }
+        let _ = conn.flush();
     }
 
     /// Set _NET_WM_WINDOW_TYPE to UTILITY on detached app windows so tiling WMs float them.
@@ -281,16 +219,11 @@ impl AppCaptureManager {
             self.search_fails.remove(&pid);
 
             let win = all_wins[0];
-            let siblings: Vec<Window> = all_wins[1..].to_vec();
 
-            let mut unmapped = false;
-            if let Some(conn) = self.conn.as_ref() {
-                for &w in &all_wins {
-                    let _ = conn.unmap_window(w);
-                }
-                let _ = conn.flush();
-                unmapped = true;
-            }
+            // On the private Xvfb the app is already invisible (headless). Do NOT
+            // unmap or move it offscreen — it must stay mapped on-screen within the
+            // Xvfb for X11 GetImage to return its pixels.
+            let unmapped = false;
 
             self.embedded.insert(
                 pid,
@@ -303,14 +236,10 @@ impl AppCaptureManager {
                     pixels: None,
                     width: 0,
                     height: 0,
-                    last_capture: Instant::now() - CAPTURE_INTERVAL,
-                    sibling_windows: siblings,
                     bg_pixels: None,
                     last_bg_gen: 0,
                 },
             );
-        } else if self.frame % 120 == 0 {
-            self.unmap_new_siblings(pid);
         }
 
         // state machine: stabilization -> offscreen transition
@@ -364,10 +293,10 @@ impl AppCaptureManager {
                 }));
                 entry.bg_pixels = Some(shared.clone());
                 let win = entry.window;
-                let screen = self.screen_num;
+                let display = tuxinjector_gui::companion_xserver::display_string();
                 std::thread::Builder::new()
                     .name("app-capture".into())
-                    .spawn(move || bg_capture_loop(win, screen, shared))
+                    .spawn(move || bg_capture_loop(win, display, shared))
                     .ok();
             }
         }
@@ -411,14 +340,19 @@ impl AppCaptureManager {
         if self.conn.is_some() {
             return true;
         }
-        match x11rb::connect(None) {
+        // Companion apps run on tux's private headless Xvfb, not the host display.
+        let disp = match tuxinjector_gui::companion_xserver::display_string() {
+            Some(d) => d,
+            None => return false, // server not started yet → nothing to capture
+        };
+        match x11rb::connect(Some(&disp)) {
             Ok((conn, screen)) => {
                 self.conn = Some(conn);
                 self.screen_num = screen;
                 true
             }
             Err(e) => {
-                tracing::warn!(%e, "failed to connect to X11");
+                tracing::warn!(%e, display = %disp, "failed to connect to companion X server");
                 false
             }
         }
@@ -475,76 +409,14 @@ impl AppCaptureManager {
         results.into_iter().map(|(w, _)| w).collect()
     }
 
-    fn unmap_new_siblings(&mut self, pid: u32) {
-        let capture_win = match self.embedded.get(&pid) {
-            Some(e) => e.window,
-            None => return,
-        };
-        let known: Vec<Window> = {
-            let entry = self.embedded.get(&pid).unwrap();
-            std::iter::once(capture_win)
-                .chain(entry.sibling_windows.iter().copied())
-                .collect()
-        };
-
-        let all_wins = if let Some(conn) = self.conn.as_ref() {
-            find_all_via_xres(conn, self.screen_num, pid)
-        } else {
-            return;
-        };
-
-        let entry = match self.embedded.get_mut(&pid) {
-            Some(e) => e,
-            None => return,
-        };
-
-        for w in &all_wins {
-            if !known.contains(w) {
-                if let Some(conn) = self.conn.as_ref() {
-                    // full offscreen treatment, not just unmap -- java swing
-                    // remaps its own windows if we only unmap them
-                    let _ = setup_offscreen(conn, *w, false);
-                }
-                entry.sibling_windows.push(*w);
-            }
-        }
-    }
-}
-
-fn do_capture(conn: &RustConnection, entry: &mut EmbeddedWindow) {
-    let now = Instant::now();
-    if now.duration_since(entry.last_capture) < CAPTURE_INTERVAL && entry.pixels.is_some() {
-        return;
-    }
-
-    let (w, h) = match win_size(conn, entry.window) {
-        Some(wh) => wh,
-        None => return,
-    };
-    if w == 0 || h == 0 {
-        return;
-    }
-
-    match conn.get_image(ImageFormat::Z_PIXMAP, entry.window, 0, 0, w as u16, h as u16, !0) {
-        Ok(cookie) => match cookie.reply() {
-            Ok(reply) => {
-                entry.pixels = Some(bgra_to_rgba(&reply.data, reply.depth));
-                entry.width = w;
-                entry.height = h;
-                entry.last_capture = now;
-            }
-            Err(_) => {}
-        },
-        Err(_) => {}
-    }
 }
 
 fn bg_capture_loop(
     win: Window,
-    screen: usize,
+    display: Option<String>,
     shared: std::sync::Arc<std::sync::Mutex<BgCapture>>,
 ) {
-    let (conn, _) = match x11rb::connect(None) {
+    let (conn, _) = match x11rb::connect(display.as_deref()) {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -580,51 +452,13 @@ fn bg_capture_loop(
     }
 }
 
-fn setup_offscreen(conn: &RustConnection, win: Window, already_unmapped: bool) -> X11Res<()> {
-    if !already_unmapped {
-        conn.unmap_window(win)?.check()?;
-    }
-
-    // override_redirect so the WM doesn't manage it
-    conn.change_window_attributes(
-        win,
-        &ChangeWindowAttributesAux::new().override_redirect(1),
-    )?.check()?;
-
-    // set window type to UTILITY -- tiling WMs (hyprland) auto-float these
-    if let (Some(wm_type), Some(utility)) = (
-        intern(conn, b"_NET_WM_WINDOW_TYPE"),
-        intern(conn, b"_NET_WM_WINDOW_TYPE_UTILITY"),
-    ) {
-        let _ = conn.change_property32(
-            x11rb::protocol::xproto::PropMode::REPLACE,
-            win, wm_type,
-            x11rb::protocol::xproto::AtomEnum::ATOM,
-            &[utility],
-        );
-    }
-
-    // tell WMs to skip taskbar/pager
-    if let (Some(state), Some(skip_tb), Some(skip_pg)) = (
-        intern(conn, b"_NET_WM_STATE"),
-        intern(conn, b"_NET_WM_STATE_SKIP_TASKBAR"),
-        intern(conn, b"_NET_WM_STATE_SKIP_PAGER"),
-    ) {
-        let _ = conn.change_property32(
-            x11rb::protocol::xproto::PropMode::REPLACE,
-            win, state,
-            x11rb::protocol::xproto::AtomEnum::ATOM,
-            &[skip_tb, skip_pg],
-        );
-    }
-
-    conn.configure_window(
-        win,
-        &ConfigureWindowAux::new().x(-32000).y(-32000),
-    )?.check()?;
-
-    conn.map_window(win)?.check()?;
-    conn.flush()?;
+// No-op on the private Xvfb. Companion apps run on tux's own headless X server,
+// so there is no host WM to hide from and no user-visible display to move off of.
+// The window is left exactly where AWT mapped it (on-screen within the Xvfb) so
+// X11 GetImage can read its pixels. (Previously this unmapped + override-redirected
+// + moved the window to -32000,-32000 to hide it on the host display — which would
+// put it off the Xvfb screen and break capture.)
+fn setup_offscreen(_conn: &RustConnection, _win: Window, _already_unmapped: bool) -> X11Res<()> {
     Ok(())
 }
 

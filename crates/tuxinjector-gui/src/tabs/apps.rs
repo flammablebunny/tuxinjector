@@ -317,7 +317,11 @@ fn resolve_java() -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
+fn launch_app(
+    jar: &Path,
+    extra_args: &[&str],
+    detached: bool,
+) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
 
     let ld = nix_ld_path();
@@ -329,15 +333,38 @@ fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, St
         .arg("-jar")
         .arg(jar)
         .args(extra_args)
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("WAYLAND_SOCKET")
         .env_remove("LD_PRELOAD")
         .env("_JAVA_AWT_WM_NONREPARENTING", "1")
-        .env("TUXINJECTOR_STDIN_KEYS", "1")
         .env("LD_LIBRARY_PATH", &ld)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null());
+
+    if detached {
+        // Standalone, visible window on the user's REAL X server (XWayland) —
+        // inherit the host DISPLAY (do NOT point at the headless Xvfb). Use this
+        // to (re)bind app hotkeys: keys you press here travel the same X11 XRecord
+        // path tux injects into when the app is anchored, so the codes NBB stores
+        // will match what XTEST delivers on the Xvfb. The injected game keeps its
+        // DISPLAY env; we simply don't override it.
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    } else {
+        // Anchored: run inside tux's private headless X server (Xvfb). Because tux
+        // owns that server, the app's JNativeHook/XRecord global hotkeys see
+        // XTEST-injected keys — which they cannot on the host Xwayland. Stock app:
+        // no stdin patch.
+        let companion_display = super::super::companion_xserver::ensure_started()
+            .map(|n| format!(":{n}"));
+        if companion_display.is_none() {
+            return Err("companion Xvfb unavailable - set TUXINJECTOR_XVFB to the Xvfb \
+                        binary path in your wrapper".to_string());
+        }
+
+        cmd.env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
+            .env("DISPLAY", companion_display.as_deref().unwrap())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
     // auto-kill child when game exits (prevents zombie processes)
     unsafe {
         cmd.pre_exec(|| {
@@ -350,7 +377,11 @@ fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, St
 }
 
 #[cfg(target_os = "macos")]
-fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
+fn launch_app(
+    jar: &Path,
+    extra_args: &[&str],
+    _detached: bool,
+) -> Result<std::process::Child, String> {
     let java = resolve_java();
 
     let mut cmd = std::process::Command::new(&java);
@@ -374,7 +405,8 @@ fn do_launch(
     mode: LaunchMode,
     slot: &mut Option<std::process::Child>,
 ) {
-    match launch_app(jar, extra_args) {
+    let detached = matches!(mode, LaunchMode::Detached);
+    match launch_app(jar, extra_args, detached) {
         Ok(mut child) => {
             let pid = child.id();
             if let Some(stdin) = child.stdin.take() {
@@ -527,7 +559,8 @@ pub fn render(ui: &imgui::Ui, state: &mut AppsState) {
     ui.dummy([0.0, 4.0]);
     ui.text_disabled(
         "Launch -- anchored inside the game window (survives fullscreen). \
-         Launch Detached / Launch with GUI -- standalone floating window.",
+         Launch Detached -- standalone window on your desktop; bind app hotkeys \
+         here so they match the anchored injection.",
     );
 }
 
@@ -561,6 +594,13 @@ fn launch_buttons(
             ui.same_line();
             if ui.button(format!("Launch Detached##detach_{}", app.id)) {
                 do_launch(jar, app.name, &[], LaunchMode::Detached, &mut state.procs[idx]);
+            }
+            if ui.is_item_hovered() {
+                ui.tooltip_text(
+                    "Standalone window on your normal desktop. Use this to (re)bind \
+                     the app's global hotkeys - keys bound here will match the keys \
+                     tux injects when the app is launched anchored.",
+                );
             }
             ui.same_line();
 
