@@ -7,27 +7,24 @@ use tuxinjector_config::types::KeyRebindsConfig;
 
 struct RebindEntry {
     from: i32,
-    to_game: i32,
-    to_chat: i32, // 0 = same as to_game
+    to_game: i32, // 0 = no rebind in game mode (pass key through unchanged)
+    to_chat: i32, // 0 = no rebind in chat/text mode (pass key through unchanged)
 }
 
 impl RebindEntry {
     fn target(&self, in_chat: bool) -> Option<i32> {
-        if in_chat && self.to_chat != 0 {
-            Some(self.to_chat)
-        } else if self.to_game != 0 {
-            Some(self.to_game)
-        } else {
-            None // no valid target for current mode
-        }
+        let t = if in_chat { self.to_chat } else { self.to_game };
+        if t != 0 { Some(t) } else { None }
     }
 }
 
 pub struct KeyRebinder {
     on: bool,
     entries: Vec<RebindEntry>,
-    // true when cursor is free (chat, inventory, pause menu, etc)
-    in_chat: bool,
+    // Some(true)  = mod-provided state says cursor-free (chat/inventory/pause)
+    // Some(false) = mod-provided state says cursor-grabbed (in-game)
+    // None        = no mod state tag -> fall back to live GLFW cursor capture
+    in_chat: Option<bool>,
 }
 
 impl KeyRebinder {
@@ -35,7 +32,7 @@ impl KeyRebinder {
         Self {
             on: false,
             entries: Vec::new(),
-            in_chat: false,
+            in_chat: None,
         }
     }
 
@@ -62,12 +59,29 @@ impl KeyRebinder {
 
     // returns true if the chat state actually changed
     pub fn set_game_state(&mut self, state: &str) -> bool {
-        let chat = state.contains("cursor_free");
-        if self.in_chat != chat {
-            self.in_chat = chat;
+        let new = if state.contains("cursor_free") {
+            Some(true)
+        } else if state.contains("cursor_grabbed") {
+            Some(false)
+        } else {
+            None // no tag -> effective_in_chat falls back to live cursor state
+        };
+        if self.in_chat != new {
+            self.in_chat = new;
             true
         } else {
             false
+        }
+    }
+
+    /// Resolve the current "chat mode" flag. Mod-provided state (if any) is
+    /// authoritative. Otherwise use the live GLFW cursor capture state: MC
+    /// always calls glfwSetInputMode(GLFW_CURSOR, GLFW_CURSOR_NORMAL) when
+    /// opening a text-input screen, so "cursor freed" = typing context.
+    fn effective_in_chat(&self) -> bool {
+        match self.in_chat {
+            Some(chat) => chat,
+            None => !crate::callbacks::is_cursor_captured(),
         }
     }
 
@@ -76,10 +90,11 @@ impl KeyRebinder {
             return key;
         }
         let sc_key = tuxinjector_config::key_names::SCANCODE_OFFSET as i32 + scancode;
+        let in_chat = self.effective_in_chat();
         self.entries
             .iter()
             .find(|e| e.from == key || (scancode > 0 && e.from == sc_key))
-            .and_then(|e| e.target(self.in_chat))
+            .and_then(|e| e.target(in_chat))
             .unwrap_or(key)
     }
 
@@ -88,9 +103,10 @@ impl KeyRebinder {
         if !self.on {
             return key;
         }
+        let in_chat = self.effective_in_chat();
         self.entries
             .iter()
-            .find(|e| e.target(self.in_chat) == Some(key))
+            .find(|e| e.target(in_chat) == Some(key))
             .map(|e| e.from)
             .unwrap_or(key)
     }
@@ -102,9 +118,10 @@ impl KeyRebinder {
     // active (from, to) pairs for current state. empty when disabled
     pub fn active_rebinds(&self) -> Vec<(i32, i32)> {
         if self.on {
+            let in_chat = self.effective_in_chat();
             self.entries
                 .iter()
-                .filter_map(|e| e.target(self.in_chat).map(|t| (e.from, t)))
+                .filter_map(|e| e.target(in_chat).map(|t| (e.from, t)))
                 .collect()
         } else {
             Vec::new()
@@ -131,9 +148,18 @@ mod tests {
         RebindEntry { from, to_game: game, to_chat: chat }
     }
 
+    // Pin an explicit game-mode state so tests don't depend on the
+    // process-wide CURSOR_CAPTURED atomic (which defaults to false and
+    // would otherwise route through the chat target in `effective_in_chat`).
+    fn new_in_game() -> KeyRebinder {
+        let mut rb = KeyRebinder::new();
+        rb.set_game_state("inworld,cursor_grabbed");
+        rb
+    }
+
     #[test]
     fn basic_remap() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         rb.entries.push(mk(65, 66)); // A -> B
 
@@ -142,7 +168,7 @@ mod tests {
 
     #[test]
     fn no_match_returns_original() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         rb.entries.push(mk(65, 66));
 
@@ -151,7 +177,7 @@ mod tests {
 
     #[test]
     fn disabled_returns_original() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = false;
         rb.entries.push(mk(65, 66));
 
@@ -160,7 +186,7 @@ mod tests {
 
     #[test]
     fn multiple_rebinds() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         rb.entries.push(mk(65, 66)); // A -> B
         rb.entries.push(mk(67, 68)); // C -> D
@@ -174,7 +200,7 @@ mod tests {
 
     #[test]
     fn reverse_remap() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         rb.entries.push(mk(344, 404)); // RShift -> Mouse5
 
@@ -186,7 +212,7 @@ mod tests {
 
     #[test]
     fn split_game_chat_targets() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         // O -> Q in game, O -> P in chat
         rb.entries.push(mk_split(79, 81, 80));
@@ -201,18 +227,39 @@ mod tests {
     }
 
     #[test]
-    fn chat_zero_falls_back_to_game() {
+    fn chat_zero_passes_key_through_in_chat() {
+        // Game-only rebind (to_chat=0): the key must pass through unchanged
+        // when the user opens chat / a text field. Previously this fell back
+        // to the game target, making game binds fire while typing.
         let mut rb = KeyRebinder::new();
         rb.on = true;
         rb.entries.push(mk(65, 66)); // to_chat = 0
 
         rb.set_game_state("inworld,cursor_free");
-        assert_eq!(rb.remap_key(65, 0), 66); // falls back to game target
+        assert_eq!(rb.remap_key(65, 0), 65); // unchanged in chat
+
+        rb.set_game_state("inworld,cursor_grabbed");
+        assert_eq!(rb.remap_key(65, 0), 66); // active in game
+    }
+
+    #[test]
+    fn game_zero_passes_key_through_in_game() {
+        // Chat-only rebind (to_game=0): the key must pass through unchanged
+        // during gameplay.
+        let mut rb = KeyRebinder::new();
+        rb.on = true;
+        rb.entries.push(mk_split(65, 0, 66)); // to_game=0, to_chat=66
+
+        rb.set_game_state("inworld,cursor_grabbed");
+        assert_eq!(rb.remap_key(65, 0), 65); // unchanged in game
+
+        rb.set_game_state("inworld,cursor_free");
+        assert_eq!(rb.remap_key(65, 0), 66); // active in chat
     }
 
     #[test]
     fn config_update_replaces_bindings() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
 
         rb.on = true;
         rb.entries.push(mk(65, 66));
@@ -245,7 +292,7 @@ mod tests {
 
     #[test]
     fn chat_only_rebind_passes_through_in_game() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         // to_game = 0, to_chat = 345 (RCtrl) - chat-only rebind
         rb.entries.push(mk_split(65, 0, 345));
@@ -260,7 +307,7 @@ mod tests {
 
     #[test]
     fn chat_only_rebind_loads_from_config() {
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         let config = KeyRebindsConfig {
             enabled: true,
             rebinds: vec![KeyRebind {
@@ -281,7 +328,7 @@ mod tests {
     fn scancode_based_remap() {
         use tuxinjector_config::key_names::SCANCODE_OFFSET;
 
-        let mut rb = KeyRebinder::new();
+        let mut rb = new_in_game();
         rb.on = true;
         // scan:30 (A position) -> B
         rb.entries.push(mk(SCANCODE_OFFSET as i32 + 30, 66));
@@ -292,5 +339,21 @@ mod tests {
         assert_eq!(rb.remap_key(65, 31), 65);
         // no scancode should not match
         assert_eq!(rb.remap_key(65, 0), 65);
+    }
+
+    #[test]
+    fn falls_back_to_cursor_state_without_mod() {
+        // No mod providing game_state -> effective_in_chat relies on the
+        // live GLFW CURSOR_CAPTURED flag. Default in tests is false, so
+        // the rebinder should behave as if in chat (= cursor freed).
+        let mut rb = KeyRebinder::new();
+        rb.on = true;
+        // Game-only rebind: must pass through when cursor is freed.
+        rb.entries.push(mk(65, 66));
+        assert_eq!(rb.remap_key(65, 0), 65);
+
+        // Setting an explicit game state overrides the fallback.
+        rb.set_game_state("inworld,cursor_grabbed");
+        assert_eq!(rb.remap_key(65, 0), 66);
     }
 }

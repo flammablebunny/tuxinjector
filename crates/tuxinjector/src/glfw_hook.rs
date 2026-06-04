@@ -227,14 +227,21 @@ pub fn store_real_get_key(ptr: *mut c_void) {
     }
 }
 
-// applies reverse rebind so polling checks the physical key
+// Polls the virtual keyboard state table for logical keys so MC's chord
+// detection (F3+C, F3+F) sees a consistent view regardless of which physical
+// key pressed the logical one. Falls through to the real glfwGetKey only
+// for keys that have no rebind involvement.
 #[no_mangle]
 pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
-    use tuxinjector_input::glfw_types::MOUSE_BUTTON_OFFSET;
+    use tuxinjector_input::glfw_types::{MOUSE_BUTTON_OFFSET, GLFW_PRESS, GLFW_RELEASE};
 
     // when GUI is open, report all keys as released to prevent input leak
     if callbacks::gui_is_visible() {
         return 0;
+    }
+
+    if callbacks::is_key_pressed(key) {
+        return GLFW_PRESS;
     }
 
     let ptr = REAL_GET_KEY_PTR.load(Ordering::Acquire);
@@ -243,12 +250,14 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
         return 0;
     }
 
+    // Physical key corresponding to the logical key being polled (reverse
+    // rebind). If this is a key→mouse rebind, route through the mouse button
+    // poll instead.
     let physical = callbacks::physical_key_for(key);
 
-    // rebind landed on a mouse button - route through glfwGetMouseButton
     if physical >= MOUSE_BUTTON_OFFSET as i32 {
         let mb_ptr = REAL_GET_MOUSE_BUTTON_PTR.load(Ordering::Acquire);
-        if mb_ptr.is_null() { return 0; }
+        if mb_ptr.is_null() { return GLFW_RELEASE; }
         let real_mb: GlfwGetMouseButtonFn = std::mem::transmute(mb_ptr);
         return real_mb(window, physical - MOUSE_BUTTON_OFFSET as c_int);
     }

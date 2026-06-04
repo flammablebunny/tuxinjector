@@ -26,23 +26,127 @@ static REAL_SET_CURSOR_CB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static REAL_SET_SCROLL_CB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static REAL_SET_INPUT_MODE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
-// --- key state tracking ---
+// glfwSetCursorPos + glfwGetWindowSize: stashed so we can re-center the
+// cursor on menu open to prevent intentional cursor misplacement (ICM).
+static REAL_SET_CURSOR_POS: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static REAL_GET_WINDOW_SIZE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
-static PRESSED_KEYS: Mutex<Option<std::collections::HashSet<i32>>> = Mutex::new(None);
+pub fn store_real_set_cursor_pos(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_SET_CURSOR_POS.store(ptr, Ordering::Release);
+    }
+}
 
-fn track_key(key: i32, action: i32) {
-    let mut guard = PRESSED_KEYS.lock();
-    let set = guard.get_or_insert_with(std::collections::HashSet::new);
+pub fn store_real_get_window_size(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_GET_WINDOW_SIZE.store(ptr, Ordering::Release);
+    }
+}
+
+unsafe fn center_cursor(window: GlfwWindow) {
+    type GetWinSizeFn = unsafe extern "C" fn(GlfwWindow, *mut i32, *mut i32);
+
+    let get_ptr = REAL_GET_WINDOW_SIZE.load(Ordering::Acquire);
+    if get_ptr.is_null() {
+        debug!("center_cursor: real ptrs not resolved yet, skipping");
+        return;
+    }
+
+    let get_fn: GetWinSizeFn = std::mem::transmute(get_ptr);
+
+    let (mut ww, mut wh) = (0i32, 0i32);
+    get_fn(window, &mut ww, &mut wh);
+    if ww <= 0 || wh <= 0 { return; }
+
+    let cx = ww as f64 / 2.0;
+    let cy = wh as f64 / 2.0;
+    warp_cursor(cx, cy);
+    debug!(cx, cy, ww, wh, "cursor re-centered (menu transition, ICM prevention)");
+}
+
+pub fn warp_cursor(x: f64, y: f64) {
+    type SetCursorPosFn = unsafe extern "C" fn(GlfwWindow, f64, f64);
+
+    let win = GLFW_WINDOW.load(Ordering::Acquire);
+    let ptr = REAL_SET_CURSOR_POS.load(Ordering::Acquire);
+    if win.is_null() || ptr.is_null() {
+        return;
+    }
+    let set_fn: SetCursorPosFn = unsafe { std::mem::transmute(ptr) };
+    unsafe { set_fn(win, x, y) };
+}
+
+static REAL_GET_KEY_SCANCODE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+
+pub fn store_real_get_key_scancode(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_GET_KEY_SCANCODE.store(ptr, Ordering::Release);
+    }
+}
+/// Look up the platform scancode for a GLFW key via the real glfwGetKeyScancode.
+/// Returns None if the function pointer hasn't been resolved yet or the key has
+/// no scancode on the current layout.
+pub fn canonical_scancode(key: i32) -> Option<i32> {
+    let ptr = REAL_GET_KEY_SCANCODE.load(Ordering::Acquire);
+    if ptr.is_null() { return None; }
+    type GetKeyScancodeFn = unsafe extern "C" fn(i32) -> i32;
+    let f: GetKeyScancodeFn = unsafe { std::mem::transmute(ptr) };
+    let sc = unsafe { f(key) };
+    if sc > 0 { Some(sc) } else { None }
+}
+
+static VIRTUAL_KEYS: Mutex<Option<std::collections::HashMap<i32, std::collections::HashSet<i32>>>> =
+    Mutex::new(None);
+
+fn track_virtual_key(physical: i32, logical: i32, action: i32) {
+    let mut guard = VIRTUAL_KEYS.lock();
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
     if action == 1 /* PRESS */ {
-        set.insert(key);
+        map.entry(logical).or_default().insert(physical);
     } else if action == 0 /* RELEASE */ {
-        set.remove(&key);
+        if let Some(set) = map.get_mut(&logical) {
+            set.remove(&physical);
+            if set.is_empty() {
+                map.remove(&logical);
+            }
+        }
     }
 }
 
 pub fn is_key_pressed(key: i32) -> bool {
-    let guard = PRESSED_KEYS.lock();
-    guard.as_ref().map_or(false, |set| set.contains(&key))
+    let guard = VIRTUAL_KEYS.lock();
+    guard.as_ref().map_or(false, |m| {
+        m.get(&key).map_or(false, |s| !s.is_empty())
+    })
+}
+
+// Remembers which logical key each physical key was mapped to at PRESS
+// time. Without this, if the rebinder's decision depends on game state
+// (e.g. chat vs game) and the state changes between PRESS and RELEASE,
+// the two events get routed to different logical keys and MC ends up
+// with the original logical key "stuck" pressed forever. This map forces
+// the RELEASE (and any intervening REPEATs) to emit the same logical key
+// the PRESS emitted. 
+static PRESS_MAPPING: Mutex<Option<std::collections::HashMap<i32, i32>>> =
+    Mutex::new(None);
+
+fn record_press_mapping(physical: i32, logical: i32) {
+    // No-op for pass-through keys -- keeps the map small (only rebound
+    // keys take space) and avoids locking on the hot path for every press.
+    if physical == logical { return; }
+    let mut guard = PRESS_MAPPING.lock();
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    map.insert(physical, logical);
+}
+
+fn consume_press_mapping(physical: i32) -> Option<i32> {
+    let mut guard = PRESS_MAPPING.lock();
+    guard.as_mut().and_then(|m| m.remove(&physical))
+}
+
+fn peek_press_mapping(physical: i32) -> Option<i32> {
+    let guard = PRESS_MAPPING.lock();
+    guard.as_ref().and_then(|m| m.get(&physical)).copied()
 }
 
 /// Inject a synthetic press+release into the game's callback. GL thread only.
@@ -574,11 +678,12 @@ pub unsafe extern "C" fn tuxinjector_key_callback(
     action: i32,
     mods: i32,
 ) {
-    trace!(key, scancode, action, mods, "key event");
+    // HACK: Raw event trace -- enable `tuxinjector_input=trace` to surface this.
+    // Useful when diagnosing chord bugs (e.g. F3+C): confirms the OS is
+    // actually delivering a keydown for both keys while held together.
+    trace!(key, scancode, action, mods, "[KEY] raw event");
 
-    track_key(key, action);
-
-    let (consumed, fwd_key) = {
+    let (consumed, proposed_fwd_key) = {
         let mut guard = INPUT_HANDLER.lock();
         if let Some(ref mut handler) = *guard {
             handler.handle_key(key, scancode, action, mods)
@@ -587,8 +692,33 @@ pub unsafe extern "C" fn tuxinjector_key_callback(
         }
     };
 
+    use crate::glfw_types::{MOUSE_BUTTON_OFFSET, GLFW_PRESS, GLFW_RELEASE, GLFW_REPEAT};
+
+    // Sticky-key guard: the rebinder may pick different logical keys for
+    // the same physical key if game state changes between PRESS and RELEASE.
+    // Remember the PRESS mapping and force RELEASE + REPEAT to use it.
+    let fwd_key = match action {
+        GLFW_PRESS => {
+            record_press_mapping(key, proposed_fwd_key);
+            proposed_fwd_key
+        }
+        GLFW_RELEASE => {
+            // Consume the mapping so a future PRESS without an earlier
+            // matching release (e.g. key sticks physically) gets a fresh
+            // mapping.
+            consume_press_mapping(key).unwrap_or(proposed_fwd_key)
+        }
+        GLFW_REPEAT => {
+            peek_press_mapping(key).unwrap_or(proposed_fwd_key)
+        }
+        _ => proposed_fwd_key,
+    };
+
+    if fwd_key < MOUSE_BUTTON_OFFSET {
+        track_virtual_key(key, fwd_key, action);
+    }
+
     if !consumed {
-        use crate::glfw_types::MOUSE_BUTTON_OFFSET;
         if fwd_key >= MOUSE_BUTTON_OFFSET {
             // key was remapped to a mouse button
             fwd_mouse_btn(window, fwd_key - MOUSE_BUTTON_OFFSET, action, mods);
@@ -599,7 +729,12 @@ pub unsafe extern "C" fn tuxinjector_key_callback(
                 fwd_key_fn(window, key, scancode, action, mods);
             }
         } else {
-            fwd_key_fn(window, fwd_key, scancode, action, mods);
+            let fwd_scancode = if fwd_key != key {
+                canonical_scancode(fwd_key).unwrap_or(scancode)
+            } else {
+                scancode
+            };
+            fwd_key_fn(window, fwd_key, fwd_scancode, action, mods);
         }
 
         // when a non-char key gets rebound to a char key, inject the char event
@@ -831,6 +966,8 @@ pub unsafe fn intercept_set_input_mode(window: GlfwWindow, mode: i32, value: i32
 
     GLFW_WINDOW.store(window, Ordering::Release);
 
+    let mut should_center_after = false;
+
     if mode == GLFW_CURSOR {
         let captured = value == GLFW_CURSOR_DISABLED;
         let was = CURSOR_CAPTURED.swap(captured, Ordering::Relaxed);
@@ -845,6 +982,10 @@ pub unsafe fn intercept_set_input_mode(window: GlfwWindow, mode: i32, value: i32
             debug!("glfwSetInputMode: blocked CURSOR_DISABLED while GUI cursor is forced");
             return;
         }
+
+        if was && !captured {
+            should_center_after = true;
+        }
     }
 
     let real_ptr = REAL_SET_INPUT_MODE.load(Ordering::Acquire);
@@ -853,6 +994,14 @@ pub unsafe fn intercept_set_input_mode(window: GlfwWindow, mode: i32, value: i32
     } else {
         let real_fn: crate::glfw_types::GlfwSetInputModeFn = std::mem::transmute(real_ptr);
         real_fn(window, mode, value);
+    }
+
+    // NOTE: Make sure to run the cursor reset AFTER the mode transition has taken effect, so
+    // GLFW's internal "last known cursor position" for the now-NORMAL cursor
+    // is the window center and MC's hit-test receives a centered coord on
+    // the next glfwGetCursorPos poll.
+    if should_center_after {
+        center_cursor(window);
     }
 }
 

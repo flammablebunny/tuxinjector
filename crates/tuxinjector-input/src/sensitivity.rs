@@ -1,5 +1,11 @@
 // Mouse sensitivity scaling with layered overrides.
 // Priority: hotkey > mode > base config value.
+//
+// Delta-based scaling modelled on toolscreen's GetRawInputData hook:
+// compute the raw input delta per frame, scale it, and accumulate into
+// the output position the game sees. At sens=1.0 we pass the raw delta
+// through unchanged. The sub-pixel accumulator and its reset paths
+// (on sens change / direction flip) mirror toolscreen's behaviour.
 
 use tracing::trace;
 
@@ -8,12 +14,30 @@ pub struct SensitivityState {
     // (uniform, optional per-axis (x, y))
     mode_override: Option<(f32, Option<(f32, f32)>)>,
     hotkey_override: Option<(f32, Option<(f32, f32)>)>,
-    // last output position (what the game actually sees)
-    out_x: f64,
-    out_y: f64,
-    // last raw input position from GLFW
+
+    // Last raw GLFW input position (absolute virtual cursor pos in
+    // CURSOR_DISABLED mode; window-relative in CURSOR_NORMAL).
     raw_x: f64,
     raw_y: f64,
+
+    // Last output position we sent to the game. MC reads this as its
+    // Mouse.x and computes its own frame-to-frame delta for camera turn.
+    out_x: f64,
+    out_y: f64,
+
+    // Sub-pixel fractional residual carried across frames. Parallel to
+    // toolscreen's `xAccum`/`yAccum`: holds the scaled-but-unconsumed
+    // portion of the delta. For f64 output we consume fully each frame,
+    // but the reset paths (sens change, direction flip) still matter.
+    x_accum: f64,
+    y_accum: f64,
+
+    // Last sensitivity we applied. Used to detect a sens change and drop
+    // any stale accumulator residual (otherwise old-sens fractional bits
+    // would bleed into new-sens output).
+    last_sx: f32,
+    last_sy: f32,
+
     inited: bool,
 }
 
@@ -23,10 +47,14 @@ impl SensitivityState {
             base: 1.0,
             mode_override: None,
             hotkey_override: None,
-            out_x: 0.0,
-            out_y: 0.0,
             raw_x: 0.0,
             raw_y: 0.0,
+            out_x: 0.0,
+            out_y: 0.0,
+            x_accum: 0.0,
+            y_accum: 0.0,
+            last_sx: 1.0,
+            last_sy: 1.0,
             inited: false,
         }
     }
@@ -63,38 +91,81 @@ impl SensitivityState {
         self.hotkey_override.is_some()
     }
 
-    // scale cursor position using delta from last raw input
     pub fn scale_cursor(&mut self, x: f64, y: f64) -> (f64, f64) {
+        let (sx, sy) = self.effective_sensitivity();
+
         if !self.inited {
             self.raw_x = x;
             self.raw_y = y;
             self.out_x = x;
             self.out_y = y;
+            self.x_accum = 0.0;
+            self.y_accum = 0.0;
+            self.last_sx = sx;
+            self.last_sy = sy;
             self.inited = true;
             return (x, y);
         }
 
-        let dx = x - self.raw_x;
-        let dy = y - self.raw_y;
-
-        let (sx, sy) = self.effective_sensitivity();
-
-        tracing::debug!(
-            raw_x = x, raw_y = y,
-            dx, dy,
-            sens_x = sx, sens_y = sy,
-            "scale_cursor: raw GLFW delta"
-        );
-
-        let nx = self.out_x + dx * sx as f64;
-        let ny = self.out_y + dy * sy as f64;
-
+        let raw_dx = x - self.raw_x;
+        let raw_dy = y - self.raw_y;
         self.raw_x = x;
         self.raw_y = y;
-        self.out_x = nx;
-        self.out_y = ny;
 
-        (nx, ny)
+        // Sensitivity changed -- drop stale fractional residual. Without
+        // this, the old sens's accumulator would corrupt output under the
+        // new one (e.g. switching from godsens to normal sens shouldn't
+        // spill godsens-scaled fractional bits into the first normal frame).
+        if (sx - self.last_sx).abs() > f32::EPSILON
+            || (sy - self.last_sy).abs() > f32::EPSILON
+        {
+            self.x_accum = 0.0;
+            self.y_accum = 0.0;
+            self.last_sx = sx;
+            self.last_sy = sy;
+        }
+
+        // Direction-flip reset per axis. Stale same-sign residual would
+        // delay opposite-direction output (matches toolscreen).
+        if raw_dx != 0.0
+            && self.x_accum != 0.0
+            && (raw_dx > 0.0) != (self.x_accum > 0.0)
+        {
+            self.x_accum = 0.0;
+        }
+        if raw_dy != 0.0
+            && self.y_accum != 0.0
+            && (raw_dy > 0.0) != (self.y_accum > 0.0)
+        {
+            self.y_accum = 0.0;
+        }
+
+        // sens=1.0 passthrough: forward raw delta untouched and zero the
+        // accumulator so a later non-identity sens starts clean.
+        let is_identity =
+            (sx - 1.0).abs() < f32::EPSILON && (sy - 1.0).abs() < f32::EPSILON;
+
+        let (out_dx, out_dy) = if is_identity {
+            self.x_accum = 0.0;
+            self.y_accum = 0.0;
+            (raw_dx, raw_dy)
+        } else {
+            // Scale delta and accumulate. f64 output has no integer
+            // rounding, so we consume the full accumulator each frame --
+            // sub-pixel precision is preserved natively.
+            self.x_accum += raw_dx * sx as f64;
+            self.y_accum += raw_dy * sy as f64;
+            let dx = self.x_accum;
+            let dy = self.y_accum;
+            self.x_accum = 0.0;
+            self.y_accum = 0.0;
+            (dx, dy)
+        };
+
+        self.out_x += out_dx;
+        self.out_y += out_dy;
+
+        (self.out_x, self.out_y)
     }
 
     pub fn reset_tracking(&mut self) {
