@@ -277,6 +277,7 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         b"glfwSetCharCallback"            => hook!(tuxinjector_input::callbacks::store_real_set_char_callback, hooked_set_char_callback),
         b"glfwSetCharModsCallback"        => hook!(tuxinjector_input::callbacks::store_real_set_char_mods_callback, hooked_set_char_mods_callback),
         b"glfwSetFramebufferSizeCallback" => hook!(viewport_hook::store_real_set_fb_size_cb, viewport_hook::hooked_glfw_set_framebuffer_size_callback),
+        b"glfwSetWindowSizeCallback"      => hook!(viewport_hook::store_real_set_win_size_cb, viewport_hook::hooked_glfw_set_window_size_callback),
         b"glfwGetFramebufferSize"         => hook!(viewport_hook::store_real_get_fb_size, viewport_hook::hooked_glfw_get_framebuffer_size),
         b"glfwSetInputMode"               => hook!(tuxinjector_input::callbacks::store_real_set_input_mode, hooked_set_input_mode),
 
@@ -289,6 +290,16 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
                 tracing::warn!("glfwGetKey: real symbol not found");
             }
             crate::glfw_hook::glfwGetKey as *mut c_void
+        }
+        b"glfwGetKeyScancode" => {
+            // stash real ptr so our callback can rewrite scancode on rebinds
+            let real_ptr = real_dlsym()(handle, symbol);
+            if !real_ptr.is_null() {
+                crate::glfw_hook::store_real_get_key_scancode(real_ptr);
+            } else {
+                tracing::warn!("glfwGetKeyScancode: real symbol not found");
+            }
+            crate::glfw_hook::glfwGetKeyScancode as *mut c_void
         }
         b"glfwGetMouseButton" => {
             let real_ptr = real_dlsym()(handle, symbol);
@@ -312,6 +323,25 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         }
 
         b"glfwSetWindowTitle" => hook!(crate::window_state::store_real_set_window_title, crate::window_state::hooked_glfw_set_window_title),
+
+        // Stash real ptrs so we can programmatically center the cursor on
+        // menu open (ICM prevention). We don't override these -- just
+        // return the real function to the caller.
+        b"glfwSetCursorPos" => {
+            let p = real_dlsym()(handle, symbol);
+            if !p.is_null() {
+                tuxinjector_input::callbacks::store_real_set_cursor_pos(p);
+            }
+            p
+        }
+        b"glfwGetWindowSize" => {
+            let p = real_dlsym()(handle, symbol);
+            if !p.is_null() {
+                tuxinjector_input::callbacks::store_real_get_window_size(p);
+                viewport_hook::store_real_get_window_size(p);
+            }
+            viewport_hook::hooked_glfw_get_window_size as *mut c_void
+        }
 
         _ => real_dlsym()(handle, symbol),
     }
