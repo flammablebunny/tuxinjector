@@ -13,10 +13,15 @@ local ti = require("tuxinjector")
 
 local mirrors = {
     {
-        -- Pie chart from F3+S, displayed as circle. Passthrough keeps original RGB.
+        -- Pie chart from Shift+F3, displayed as circle. Passthrough keeps original RGB.
+        -- Capture region matches waywall's `tall_pie_all`: src = {44, 15978, 340, 178}
+        -- relative to pieLeft anchor in a 384×16384 tall viewport. Slightly
+        -- larger and shifted up-left vs the previous (319×169 at -238,-180)
+        -- to ensure the pie segment pixels land inside the capture rather
+        -- than just outside it in tall mode.
         name = "pieChart",
-        captureWidth = 319,
-        captureHeight = 169,
+        captureWidth = 340,
+        captureHeight = 178,
         colorPassthrough = true,
         colorSensitivity = 0.001,
         colors = {
@@ -41,7 +46,7 @@ local mirrors = {
             dynamicThickness = 4,
         },
         input = {
-            { relativeTo = "pieLeft", x = -238, y = -180 },
+            { relativeTo = "pieLeft", x = -248, y = -186 },
         },
         output = {
             relativeTo = "centerViewport",
@@ -305,7 +310,7 @@ local modes = {
         background = mode_gradient_bg,
     },
     {
-        -- Preemptive: Tall without images, for pie viewing during stronghold nav.
+        -- Preemptive: Tall without sens change, for pie viewing during stronghold nav.
         id = "Preemptive",
         width = 384,
         height = 16384,
