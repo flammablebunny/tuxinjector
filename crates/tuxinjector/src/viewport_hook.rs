@@ -14,6 +14,13 @@ type WlEglWindowResizeFn = unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int
 type GlfwFbSizeCb = unsafe extern "C" fn(window: *mut c_void, w: c_int, h: c_int);
 type GlfwSetFbSizeCbFn =
     unsafe extern "C" fn(window: *mut c_void, callback: Option<GlfwFbSizeCb>) -> Option<GlfwFbSizeCb>;
+
+// Window-size callback (separate from fb-size). MC uses this to populate
+// window.width/height, which feeds into cursor -> GUI coord math. We must
+// fire it with the fake dims on mode switches.
+type GlfwWinSizeCb = unsafe extern "C" fn(window: *mut c_void, w: c_int, h: c_int);
+type GlfwSetWinSizeCbFn =
+    unsafe extern "C" fn(window: *mut c_void, callback: Option<GlfwWinSizeCb>) -> Option<GlfwWinSizeCb>;
 type GlfwGetFbSizeFn = unsafe extern "C" fn(window: *mut c_void, w: *mut c_int, h: *mut c_int);
 type GlViewportFn = unsafe extern "C" fn(x: c_int, y: c_int, w: c_int, h: c_int);
 type GlScissorFn = unsafe extern "C" fn(x: c_int, y: c_int, w: c_int, h: c_int);
@@ -851,7 +858,8 @@ unsafe fn try_x11_window_resize(mode_w: u32, mode_h: u32, orig_w: u32, orig_h: u
     let dpy = get_dpy();
     let glfw_win = GAME_WINDOW.load(Ordering::Acquire);
     if dpy.is_null() || glfw_win.is_null() {
-        tracing::warn!(dpy = ?dpy, glfw_win = ?glfw_win, "x11_resize: null display or window");
+        // Expected on the Wayland backend (no GLX display / X11 window).
+        tracing::debug!(dpy = ?dpy, glfw_win = ?glfw_win, "x11_resize: null display or window");
         return;
     }
     let x11_win = get_win(glfw_win);
@@ -919,6 +927,8 @@ static GAME_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static GAME_FB_SIZE_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static REAL_SET_FB_SIZE_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static REAL_GET_FB_SIZE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static GAME_WIN_SIZE_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_SET_WIN_SIZE_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 // --- Size state (packed into u64 for atomic ops) ---
 
@@ -936,6 +946,10 @@ pub fn store_real_set_fb_size_cb(ptr: *mut c_void) {
 
 pub fn store_real_get_fb_size(ptr: *mut c_void) {
     REAL_GET_FB_SIZE.store(ptr, Ordering::Release);
+}
+
+pub fn store_real_set_win_size_cb(ptr: *mut c_void) {
+    REAL_SET_WIN_SIZE_CB.store(ptr, Ordering::Release);
 }
 
 // --- PLT hooks: wl_egl_window ---
@@ -1456,7 +1470,7 @@ pub unsafe fn unpatch_inline_hooks() {
 
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
     HOOKS_PATCHED.store(false, Ordering::Release);
-    tracing::info!("inline hooks unpatched (fullscreen — native GL)");
+    tracing::debug!("inline hooks unpatched (fullscreen — native GL)");
 }
 
 /// Re-apply inline hook patches for viewport centering in non-fullscreen modes.
@@ -1490,96 +1504,20 @@ pub unsafe fn repatch_inline_hooks() {
 
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
     HOOKS_PATCHED.store(true, Ordering::Release);
-    tracing::info!("inline hooks repatched (non-fullscreen mode)");
+    tracing::debug!("inline hooks repatched (non-fullscreen mode)");
 }
 
-/// Centers game rendering within the EGL surface during mode resizes
+// glViewport / glScissor are intercepted only to keep GL_VIEWPORT_SEEN current
+// and to share the inline-hook machinery with glBindFramebuffer (which IS needed
+// for the oversized virtual-FBO redirect). They no longer re-center: tux's
+// `center_game_content` now owns the present for every resized mode, reading the
+// game's mode-sized render target and compositing it centered into the physical
+// backbuffer. Re-centering here was not just redundant but actively corrupting:
+// Sodium 26 sets its terrain viewport (0,0,modeW,modeH) BEFORE binding its own
+// render target, so while FBO 0 was momentarily current our FBO-0 re-center
+// leaked onto the terrain pass, breaking depth occlusion (see-through blocks).
 pub unsafe extern "C" fn hooked_gl_viewport(x: c_int, y: c_int, w: c_int, h: c_int) {
     GL_VIEWPORT_SEEN.store(true, Ordering::Relaxed);
-
-    // fast path: no mode active or fullscreen (mode == original) → pass through
-    let packed_mode = MODE_DIMS.load(Ordering::Relaxed);
-    if packed_mode == 0 || packed_mode == ORIGINAL_DIMS.load(Ordering::Relaxed) {
-        if let Some(real) = REAL_GL_VIEWPORT_COPY.get().copied() {
-            return real(x, y, w, h);
-        }
-    }
-
-    let (mw, mh) = unpack(packed_mode);
-    let (ow, oh) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
-    let mode_w = mw as c_int;
-    let mode_h = mh as c_int;
-    let orig_w = ow as c_int;
-    let orig_h = oh as c_int;
-
-    let oversized = is_oversized(mw, mh, ow, oh);
-
-    if oversized && mode_w > 0 && mode_h > 0 {
-        let draw_fbo = get_gl_get_integerv().map(|f| {
-            let mut out: c_int = -1;
-            f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
-            out
-        });
-        tracing::debug!(x, y, w, h, mode_w, mode_h, orig_h,
-            draw_fbo = ?draw_fbo, "hooked_gl_viewport: oversized mode diag");
-    }
-
-    let (fx, fy, fw, fh) =
-        if mode_w > 0 && mode_h > 0 && !oversized
-            && (orig_w != mode_w || orig_h != mode_h)
-            && x == 0 && y == 0 && w == mode_w && h == mode_h
-        {
-            // only center on FBO 0 (the backbuffer). Sodium's FBOs match
-            // mode_w x mode_h exactly, so centering those shoves the
-            // viewport off the edge and you get a black frame.
-            let draw_fbo = get_gl_get_integerv().map(|f| {
-                let mut out: c_int = -1;
-                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
-                out
-            });
-            if draw_fbo == Some(0) {
-                let cx = (orig_w - mode_w) / 2;
-                let cy = (orig_h - mode_h) / 2;
-                static CENTER_LOG: std::sync::Once = std::sync::Once::new();
-                CENTER_LOG.call_once(|| {
-                    tracing::info!(x, y, w, h, mode_w, mode_h, orig_w, orig_h, cx, cy,
-                        "hooked_gl_viewport: centering FBO0 (first)");
-                });
-                (cx, cy, w, h)
-            } else {
-                tracing::trace!(x, y, w, h, draw_fbo = ?draw_fbo,
-                    "hooked_gl_viewport: undersized custom FBO pass-through");
-                (x, y, w, h)
-            }
-        } else if mode_w > 0 && mode_h > 0 && oversized
-            && orig_h > 0
-            && x == 0 && y == 0 && w == mode_w && h == mode_h
-        {
-            // oversized: only center on back buffer (FBO 0)
-            let draw_fbo = get_gl_get_integerv().map(|f| unsafe {
-                let mut out: c_int = -1;
-                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
-                out
-            });
-            if draw_fbo == Some(0) {
-                let cx = if mode_w < orig_w { (orig_w - mode_w) / 2 } else { 0 };
-                let cy = -((mode_h - orig_h) / 2);
-                tracing::info!(x, y, w, h, cx, cy, orig_w, orig_h, mode_w, mode_h,
-                    "hooked_gl_viewport: oversized FBO0 center");
-                (cx, cy, w, h)
-            } else {
-                tracing::trace!(x, y, w, h, draw_fbo = ?draw_fbo,
-                    "hooked_gl_viewport: oversized custom FBO pass-through");
-                (x, y, w, h)
-            }
-        } else {
-            tracing::trace!(
-                x, y, w, h, mode_w, mode_h, orig_w, orig_h, oversized,
-                real_vp_set = REAL_GL_VIEWPORT.get().is_some(),
-                "hooked_gl_viewport: pass-through"
-            );
-            (x, y, w, h)
-        };
 
     let real: &GlViewportFn = REAL_GL_VIEWPORT_COPY
         .get()
@@ -1587,73 +1525,18 @@ pub unsafe extern "C" fn hooked_gl_viewport(x: c_int, y: c_int, w: c_int, h: c_i
         .unwrap_or_else(|| {
             static FALLBACK: OnceLock<GlViewportFn> = OnceLock::new();
             FALLBACK.get_or_init(|| {
-                tracing::warn!(x = fx, y = fy, w = fw, h = fh,
-                    "hooked_gl_viewport: last-resort RTLD_NEXT resolve");
+                tracing::warn!(x, y, w, h, "hooked_gl_viewport: last-resort RTLD_NEXT resolve");
                 let ptr = crate::dlsym_hook::resolve_real_symbol(b"glViewport\0");
                 assert!(!ptr.is_null(), "tuxinjector: cannot resolve glViewport");
                 unsafe { std::mem::transmute(ptr) }
             })
         });
-    real(fx, fy, fw, fh);
+    real(x, y, w, h);
 }
 
 pub unsafe extern "C" fn hooked_gl_scissor(x: c_int, y: c_int, w: c_int, h: c_int) {
-    // fast path: no mode active or fullscreen → pass through
-    let packed_mode = MODE_DIMS.load(Ordering::Relaxed);
-    if packed_mode == 0 || packed_mode == ORIGINAL_DIMS.load(Ordering::Relaxed) {
-        if let Some(real) = REAL_GL_SCISSOR.get().copied() {
-            return real(x, y, w, h);
-        }
-    }
-
-    let (mw, mh) = unpack(packed_mode);
-    let (ow, oh) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
-    let mode_w = mw as c_int;
-    let mode_h = mh as c_int;
-    let orig_w = ow as c_int;
-    let orig_h = oh as c_int;
-    let oversized = is_oversized(mw, mh, ow, oh);
-
-    let (sx, sy) =
-        if mode_w > 0 && mode_h > 0 && !oversized
-            && (orig_w != mode_w || orig_h != mode_h)
-            && x == 0 && y == 0 && w == mode_w && h == mode_h
-        {
-            // same FBO 0 check as viewport -- Sodium's FBOs don't need offsetting
-            let draw_fbo = get_gl_get_integerv().map(|f| {
-                let mut out: c_int = -1;
-                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
-                out
-            });
-            if draw_fbo == Some(0) {
-                let cx = (orig_w - mode_w) / 2;
-                let cy = (orig_h - mode_h) / 2;
-                (cx, cy)
-            } else {
-                (x, y)
-            }
-        } else if mode_w > 0 && mode_h > 0 && oversized
-            && orig_h > 0
-            && x == 0 && y == 0 && w == mode_w && h == mode_h
-        {
-            let draw_fbo = get_gl_get_integerv().map(|f| unsafe {
-                let mut out: c_int = -1;
-                f(GL_DRAW_FRAMEBUFFER_BINDING, &mut out);
-                out
-            });
-            if draw_fbo == Some(0) {
-                let cx = if mode_w < orig_w { (orig_w - mode_w) / 2 } else { 0 };
-                let cy = -((mode_h - orig_h) / 2);
-                (cx, cy)
-            } else {
-                (x, y)
-            }
-        } else {
-            (x, y)
-        };
-
-    if let Some(real) = get_real_gl_scissor() {
-        real(sx, sy, w, h);
+    if let Some(real) = REAL_GL_SCISSOR.get().copied().or_else(get_real_gl_scissor) {
+        real(x, y, w, h);
     }
 }
 
@@ -1998,12 +1881,128 @@ pub fn force_store_original_size(w: u32, h: u32) {
     }
 }
 
+// --- Rendered viewport (physical area on screen where the game renders) ---
+//
+// Published by mode_system::tick() after applying stretch. In non-stretch
+// modes this is just the letterboxed position/size; in stretch modes this
+// is the actual physical rectangle on screen the game content occupies.
+// Read by cursor_screen_to_game for accurate coord translation.
+
+static RENDERED_VP_POS:  AtomicU64 = AtomicU64::new(0); // packed (i32 x, i32 y)
+static RENDERED_VP_SIZE: AtomicU64 = AtomicU64::new(0); // packed (u32 w, u32 h)
+
+/// Set by `mode_system::tick()` on every frame. Accepts f32 (rounds to i32).
+pub fn set_rendered_viewport(x: f32, y: f32, w: f32, h: f32) {
+    if w <= 0.0 || h <= 0.0 { return; }
+    let pos  = ((x.round() as i32 as u32 as u64) << 32)
+             |  (y.round() as i32 as u32 as u64);
+    let size = ((w.round() as i32 as u32 as u64) << 32)
+             |  (h.round() as i32 as u32 as u64);
+    RENDERED_VP_POS.store(pos,   Ordering::Release);
+    RENDERED_VP_SIZE.store(size, Ordering::Release);
+}
+
+fn get_rendered_viewport() -> Option<(i32, i32, i32, i32)> {
+    let size = RENDERED_VP_SIZE.load(Ordering::Acquire);
+    if size == 0 { return None; }
+    let w = (size >> 32) as u32 as i32;
+    let h = (size & 0xFFFF_FFFF) as u32 as i32;
+    let pos = RENDERED_VP_POS.load(Ordering::Acquire);
+    let x = (pos >> 32) as u32 as i32;
+    let y = (pos & 0xFFFF_FFFF) as u32 as i32;
+    if w <= 0 || h <= 0 { return None; }
+    Some((x, y, w, h))
+}
+
+/// Returns the current "rendered viewport" (physical rendered rect on the
+/// surface) published by `mode_system::tick()`, or a simple centered-letterbox
+/// fallback if the tick hasn't run yet.
+fn rendered_viewport_or_fallback() -> (i32, i32, i32, i32) {
+    if let Some(v) = get_rendered_viewport() { return v; }
+    let (mw, mh) = get_mode_size();
+    let (ow, oh) = get_original_size();
+    let cx = ((ow as i32 - mw as i32) / 2).max(0);
+    let cy = (oh as i32 - mh as i32) / 2;
+    (cx, cy, mw.max(1) as i32, mh.max(1) as i32)
+}
+
+/// Single source of truth for "OS cursor position -> game framebuffer coords".
+///
+/// Transform (in order):
+///   1. HiDPI: window points -> framebuffer pixels.
+///   2. Translate + scale into MC's fb space:
+///        game = (screen_fb - vp_offset) * (mw / vp_w, mh / vp_h)
+///
+/// Values are NOT clamped. If the OS cursor is outside the rendered strip
+/// the returned coord is outside `[0, mw) x [0, mh)` -- caller is
+/// responsible for deciding what to do with that (typically: don't forward
+/// to MC, so MC's cursor state stays frozen at its last in-strip position).
+///
+/// Handles uniformly:
+///   - Undersized letterbox: vp centered, scale = 1
+///   - Oversized (tall res): vp_y negative so game's center aligns with screen
+///   - Stretch: vp_w/h differ from mw/mh, scale absorbs it
+pub unsafe fn cursor_screen_to_game(x: f64, y: f64) -> (f64, f64) {
+    let (mw, mh) = get_mode_size();
+    let (ow, oh) = get_original_size();
+
+    if mw == 0 || ow == 0 || (mw == ow && mh == oh) {
+        return (x, y);
+    }
+
+    let (sx, sy) = content_scale();
+    let x_fb = x * sx as f64;
+    let y_fb = y * sy as f64;
+
+    let (vp_x, vp_y, vp_w, vp_h) = rendered_viewport_or_fallback();
+
+    // MC 1.16 does `guiCoord = mouseX * mw / windowWidth`, where
+    // `windowWidth = ow` (MC doesn't register a window-size callback so
+    // Window.width stays at the physical size). We want guiCoord to equal
+    // `(os - vp) * mw / vp_w`, so we pre-scale by `ow / vp_w` here to
+    // cancel MC's subsequent mw/ow rescale and land on the correct gui coord.
+    // Bonus: cursor outside the rendered strip produces mouseX far outside
+    // [0, ow], which MC rescales to far outside [0, mw] — no phantom UI hits.
+    let scale_x = ow as f64 / vp_w as f64;
+    let scale_y = oh as f64 / vp_h as f64;
+    let gx = (x_fb - vp_x as f64) * scale_x;
+    let gy = (y_fb - vp_y as f64) * scale_y;
+
+    (gx, gy)
+}
+
+/// Inverse of `cursor_screen_to_game`: takes a position in MC's fb space and
+/// returns where it should be drawn in screen (window-point) coords.
+///
+/// Used by overlay rendering so the visible "custom cursor" is drawn exactly
+/// where MC thinks the cursor is -- not where the raw OS cursor happens to
+/// be. This guarantees visual cursor == game cursor at all times.
+pub fn game_to_screen(gx: f64, gy: f64) -> (f64, f64) {
+    let (mw, mh) = get_mode_size();
+    let (ow, oh) = get_original_size();
+
+    if mw == 0 || ow == 0 || (mw == ow && mh == oh) {
+        return (gx, gy);
+    }
+
+    let (vp_x, vp_y, vp_w, vp_h) = rendered_viewport_or_fallback();
+    // Inverse of the forward transform:
+    //   screen_fb = vp_offset + game * (vp_size / mode_size)
+    //   screen    = screen_fb / content_scale
+    let x_fb = vp_x as f64 + gx * (vp_w as f64 / mw as f64);
+    let y_fb = vp_y as f64 + gy * (vp_h as f64 / mh as f64);
+    let (sx, sy) = unsafe { content_scale() };
+    let sx = if sx == 0.0 { 1.0 } else { sx };
+    let sy = if sy == 0.0 { 1.0 } else { sy };
+    (x_fb / sx as f64, y_fb / sy as f64)
+}
+
 /// Trigger a mode resize: store dims, resize surface, fire GLFW callback
 pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
     let (orig_w, orig_h) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));
     let has_vp = REAL_GL_VIEWPORT.get().is_some();
 
-    tracing::info!(mode_w, mode_h, orig_w, orig_h, real_gl_viewport_set = has_vp,
+    tracing::debug!(mode_w, mode_h, orig_w, orig_h, real_gl_viewport_set = has_vp,
         "fire_framebuffer_resize");
 
     // 0 means fullscreen -- hooks revert to pass-through
@@ -2071,12 +2070,23 @@ pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
     let glfw_win = GAME_WINDOW.load(Ordering::Acquire);
     let cb_ptr = GAME_FB_SIZE_CB.load(Ordering::Acquire);
     if !glfw_win.is_null() && !cb_ptr.is_null() {
-        tracing::info!(mode_w, mode_h, "firing GLFW framebuffer-size callback");
+        tracing::debug!(mode_w, mode_h, "firing GLFW framebuffer-size callback");
         let cb: GlfwFbSizeCb = std::mem::transmute(cb_ptr);
         cb(glfw_win, mode_w as c_int, mode_h as c_int);
     } else {
         tracing::warn!(glfw_win = ?glfw_win, cb_ptr = ?cb_ptr,
             "fire_framebuffer_resize: GLFW window/callback not captured yet");
+    }
+
+    // Also fire the window-size callback. MC caches window.width from this,
+    // which feeds its cursor→GUI math (cursor * scaledWidth / windowWidth).
+    // Without this, window.width stays at physical 2560 while framebuffer
+    // reads as 330, producing wildly wrong cursor coords.
+    let win_cb_ptr = GAME_WIN_SIZE_CB.load(Ordering::Acquire);
+    if !glfw_win.is_null() && !win_cb_ptr.is_null() {
+        tracing::debug!(mode_w, mode_h, "firing GLFW window-size callback");
+        let cb: GlfwWinSizeCb = std::mem::transmute(win_cb_ptr);
+        cb(glfw_win, mode_w as c_int, mode_h as c_int);
     }
 }
 
@@ -2098,6 +2108,22 @@ pub unsafe extern "C" fn hooked_glfw_set_framebuffer_size_callback(
     #[cfg(target_os = "macos")]
     { return real_fn(window, Some(glfw_fb_size_wrapper)); }
     #[cfg(target_os = "linux")]
+    real_fn(window, callback)
+}
+
+// --- Hooked glfwSetWindowSizeCallback ---
+
+pub unsafe extern "C" fn hooked_glfw_set_window_size_callback(
+    window: *mut c_void, callback: Option<GlfwWinSizeCb>,
+) -> Option<GlfwWinSizeCb> {
+    GAME_WINDOW.store(window, Ordering::Release);
+    if let Some(cb) = callback {
+        GAME_WIN_SIZE_CB.store(cb as *mut c_void, Ordering::Release);
+        tracing::info!("captured glfwSetWindowSizeCallback");
+    }
+    let real = REAL_SET_WIN_SIZE_CB.load(Ordering::Acquire);
+    if real.is_null() { return None; }
+    let real_fn: GlfwSetWinSizeCbFn = std::mem::transmute(real);
     real_fn(window, callback)
 }
 
@@ -2143,4 +2169,33 @@ pub unsafe extern "C" fn hooked_glfw_get_framebuffer_size(
     if real.is_null() { return; }
     let real_fn: GlfwGetFbSizeFn = std::mem::transmute(real);
     real_fn(window, width, height);
+}
+
+// --- Hooked glfwGetWindowSize ---
+//
+// MC converts cursor window coords → GUI coords via
+//   guiX = cursorX * scaledWidth / windowWidth
+// where scaledWidth is derived from the framebuffer size. In resized modes
+// we lie about the framebuffer (e.g. 330×1368 letterboxed in 2560×1440), so
+// windowWidth must match or the ratio produces off-by-huge cursor positions
+// (symptom: far-right OS cursor reads as game center).
+pub unsafe extern "C" fn hooked_glfw_get_window_size(
+    window: *mut c_void, width: *mut c_int, height: *mut c_int,
+) {
+    let (mw, mh) = unpack(MODE_DIMS.load(Ordering::Acquire));
+    if mw > 0 && mh > 0 {
+        if !width.is_null()  { *width  = mw as c_int; }
+        if !height.is_null() { *height = mh as c_int; }
+        return;
+    }
+    let real = REAL_GET_WINDOW_SIZE_PTR.load(Ordering::Acquire);
+    if real.is_null() { return; }
+    let real_fn: GlfwGetWindowSizeFn = std::mem::transmute(real);
+    real_fn(window, width, height);
+}
+
+static REAL_GET_WINDOW_SIZE_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+pub fn store_real_get_window_size(ptr: *mut c_void) {
+    REAL_GET_WINDOW_SIZE_PTR.store(ptr, Ordering::Release);
 }

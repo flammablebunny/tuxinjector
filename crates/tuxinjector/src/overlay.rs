@@ -1067,7 +1067,7 @@ impl OverlayState {
         if orig_w > 0 && orig_h > 0 {
             self.mode_system.update_screen_size(orig_w, orig_h);
         }
-        tracing::info!(
+        tracing::debug!(
             mode_id, orig_w, orig_h,
             modes = cfg.modes.len(),
             mirrors = cfg.overlays.mirrors.len(),
@@ -1097,7 +1097,7 @@ impl OverlayState {
 
         // fire framebuffer-size event for the new resolution
         if let Some((mw, mh)) = self.mode_system.dimensions_for_mode(mode_id, &cfg) {
-            tracing::info!(mode_id, mw, mh, "switch_mode: firing fb resize");
+            tracing::debug!(mode_id, mw, mh, "switch_mode: firing fb resize");
             if mw > 16384 || mh > 16384 {
                 tracing::warn!(
                     mode = mode_id, width = mw, height = mh,

@@ -294,31 +294,11 @@ impl InputHandler for TuxinjectorInputHandler {
 
         if tuxinjector_input::is_cursor_captured() {
             // FPS/relative mode - apply sensitivity scaling
-            let out = self.sens.scale_cursor(x, y);
-            let (sx, sy) = self.sens.get_effective_sensitivity();
-            tracing::debug!(
-                in_x = x, in_y = y,
-                out_x = out.0, out_y = out.1,
-                sx, sy,
-                "cursor: FPS mode"
-            );
-            Some(out)
+            Some(self.sens.scale_cursor(x, y))
         } else {
-            // menu/absolute mode - translate coords if mode resize is active
-            let (mw, mh) = crate::viewport_hook::get_mode_size();
-            let (ow, oh) = crate::viewport_hook::get_original_size();
-            if mw > 0 && ow > 0 && (mw != ow || mh != oh) {
-                let cx = (ow as f64 - mw as f64) / 2.0;
-                let cy = (oh as f64 - mh as f64) / 2.0;
-                tracing::trace!(
-                    x, y, cx, cy, mw, mh, ow, oh,
-                    out_x = x - cx, out_y = y - cy,
-                    "cursor: centering offset applied"
-                );
-                Some((x - cx, y - cy))
-            } else {
-                Some((x, y))
-            }
+            // menu / absolute mode. Defer to the shared transform so this
+            // callback path and the glfwGetCursorPos poll path stay in sync.
+            Some(unsafe { crate::viewport_hook::cursor_screen_to_game(x, y) })
         }
     }
 

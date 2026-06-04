@@ -322,6 +322,11 @@ impl ModeSystem {
         let vp_y = (self.screen_h as f32 - vp_h) / 2.0;
         let (vp_x, vp_y, vp_w, vp_h) = self.apply_stretch(mode, vp_x, vp_y, vp_w, vp_h);
 
+        // Publish the stretch-aware rendered viewport so the cursor-coord
+        // transform (in both the GLFW callback and glfwGetCursorPos poll)
+        // can map physical cursor positions correctly in stretched modes.
+        crate::viewport_hook::set_rendered_viewport(vp_x, vp_y, vp_w, vp_h);
+
         let viewport = GameViewportGeometry {
             game_w: vp_w.round() as i32,
             game_h: vp_h.round() as i32,

@@ -589,6 +589,7 @@ unsafe fn center_game_content(
     mode_h: u32,
     orig_w: u32,
     orig_h: u32,
+    read_fbo: u32,
 ) {
     static LOG_ONCE: std::sync::Once = std::sync::Once::new();
     LOG_ONCE.call_once(|| {
@@ -677,25 +678,8 @@ unsafe fn center_game_content(
     (gl.get_integer_v)(GL_DRAW_BUFFER, &mut prev_draw);
     (gl.get_integer_v)(GL_READ_BUFFER, &mut prev_read);
 
-    // for oversized modes, read from the game's internal FBO first
-    // (Sodium creates one matching mode dimensions), then fall back to
-    // virtual_fb or FBO 0
-    let read_fbo = if mode_h > orig_h || mode_w > orig_w {
-        let game = unsafe { find_game_fbo(gl, mode_w, mode_h) };
-        if game != 0 {
-            tracing::debug!(game, "center_game_content: reading from game FBO");
-            game
-        } else if crate::virtual_fb::is_active() {
-            let vfb = crate::virtual_fb::virtual_fbo();
-            tracing::debug!(vfb, "center_game_content: reading from virtual FBO");
-            if vfb != 0 { vfb } else { 0 }
-        } else {
-            tracing::debug!("center_game_content: reading from FBO 0");
-            0
-        }
-    } else {
-        0
-    };
+    // `read_fbo` is the source the caller located (the game's mode-sized
+    // render target, a virtual FBO, or 0 for the real backbuffer).
 
     // step 1: copy game pixels -> temp FBO
     (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, read_fbo);
@@ -838,11 +822,38 @@ unsafe fn render_overlay() {
                 if mw > 0 && mh > 0 && (mw != w || mh != h) {
                     let oversized = crate::viewport_hook::is_oversized(mw, mh, w, h);
                     if oversized || !crate::viewport_hook::is_gl_viewport_hooked() {
-                        center_game_content(gl, mw, mh, w, h);
-                    }
+                        // Active composite: read the game's mode-sized frame,
+                        // clear the physical backbuffer, blit it centered.
+                        // Prefer the game's own render-target FBO, then the
+                        // virtual FBO (oversized), then the real backbuffer.
+                        let game_fbo = find_game_fbo(gl, mw, mh);
+                        let read_fbo = if game_fbo != 0 {
+                            game_fbo
+                        } else if crate::virtual_fb::is_active() {
+                            crate::virtual_fb::virtual_fbo()
+                        } else {
+                            0
+                        };
+                        center_game_content(gl, mw, mh, w, h, read_fbo);
+                    } else {
+                        // Non-oversized with the inline viewport hook live.
+                        // tux normally lets that hook re-center the game's own
+                        // present into FBO 0. That works for legacy GL, but
+                        // MC 1.21.2+ (Blaze3D) presents its RenderTarget to
+                        // FBO 0 via a DSA blit we don't intercept, so only a
+                        // mode-sized sub-region updates and the rest of the
+                        // physical surface freezes on the last frame. When we
+                        // can locate the game's mode-sized render target,
+                        // actively own the present; else fall back to the hook.
+                        #[cfg(target_os = "linux")]
+                        {
+                            let game_fbo = find_game_fbo(gl, mw, mh);
+                            if game_fbo != 0 {
+                                center_game_content(gl, mw, mh, w, h, game_fbo);
+                            }
+                        }
 
-                    #[cfg(target_os = "macos")]
-                    if !oversized && crate::viewport_hook::is_gl_viewport_hooked() {
+                        #[cfg(target_os = "macos")]
                         clear_mode_borders(gl, mw, mh, w, h);
                     }
                 }

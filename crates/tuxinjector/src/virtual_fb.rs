@@ -167,7 +167,7 @@ pub unsafe fn ensure_offscreen(gl: &GlFunctions, mode_w: u32, mode_h: u32) {
         USED.store(false, Ordering::Release);
     }
 
-    tracing::info!(mode_w, mode_h, fbo, tex, rbo, "virtual_fb: offscreen ready");
+    tracing::debug!(mode_w, mode_h, fbo, tex, rbo, "virtual_fb: offscreen ready");
 }
 
 pub unsafe fn destroy_offscreen(gl: &GlFunctions) {

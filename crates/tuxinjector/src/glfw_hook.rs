@@ -197,15 +197,16 @@ pub unsafe extern "C" fn glfwGetCursorPos(
             let real: unsafe extern "C" fn(*mut c_void, *mut c_double, *mut c_double) =
                 std::mem::transmute(ptr);
             real(window, xpos, ypos);
-            // apply viewport centering offset so game gets viewport-space coords
-            let (mw, mh) = crate::viewport_hook::get_mode_size();
-            let (ow, oh) = crate::viewport_hook::get_original_size();
-            if mw > 0 && ow > 0 && (mw != ow || mh != oh) {
-                let cx = (ow as f64 - mw as f64) / 2.0;
-                let cy = (oh as f64 - mh as f64) / 2.0;
-                if !xpos.is_null() { *xpos -= cx; }
-                if !ypos.is_null() { *ypos -= cy; }
-            }
+            // Same shared transform as the cursor callback path -- handles
+            // HiDPI (window-points -> fb-pixels) AND letterbox/oversized
+            // centering. Fixes the dramatic cursor desync in menus while
+            // resized that happens when glfwGetCursorPos returns window
+            // points but MC's hit-test expects framebuffer pixels.
+            let in_x = if !xpos.is_null() { *xpos } else { 0.0 };
+            let in_y = if !ypos.is_null() { *ypos } else { 0.0 };
+            let (gx, gy) = crate::viewport_hook::cursor_screen_to_game(in_x, in_y);
+            if !xpos.is_null() { *xpos = gx; }
+            if !ypos.is_null() { *ypos = gy; }
         } else {
             tracing::warn!("glfwGetCursorPos: bundled ptr not stored yet, returning zeros");
             if !xpos.is_null() { *xpos = 0.0; }
