@@ -118,7 +118,7 @@ Multi-input mirrors use `capture_multi_from()` which blits multiple source regio
 
 ## Game FBO Discovery
 
-Minecraft (via Sodium/Iris) renders to an internal FBO, not the default framebuffer. Tuxinjector finds the game's render FBO by scanning FBO IDs and checking their color attachment dimensions:
+Minecraft (via Sodium) renders to an internal FBO, not the default framebuffer. Tuxinjector finds the game's render FBO by scanning FBO IDs and checking their color attachment dimensions:
 
 ```
 find_game_fbo_and_texture(gl, mode_w, mode_h):
@@ -145,7 +145,7 @@ The returned FBO and texture IDs are used for zero-copy mirror rendering and con
 
 ## Mode System & Content Centering
 
-The mode system lets you switch between viewport resolutions (e.g. 1920x1080 fullscreen vs 640x480 for practice). When the mode doesn't match the physical surface size, the game content gets centered with an FBO blit:
+The mode system lets you switch between viewport resolutions (e.g. 1920x1080 fullscreen vs 384x16384 for eyezoom). When the mode doesn't match the physical surface size, the game content gets centered with an FBO blit:
 
 ```
 center_game_content(gl, mode_w, mode_h, surface_w, surface_h):
