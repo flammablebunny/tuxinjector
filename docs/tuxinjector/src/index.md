@@ -6,6 +6,11 @@
 
 ---
 
+!!! note
+    Parts of this project's code and documentation were written using the help of an LLM. Any and all content has been reviewed by humans, but some mistakes can and will slip through. If you find any problems anywhere, please feel free to open an issue.
+
+---
+
 ## What is Tuxinjector?
 
 Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.
