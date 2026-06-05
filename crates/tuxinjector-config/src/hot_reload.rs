@@ -32,17 +32,17 @@ pub struct ConfigWatcher {
     _watcher: Option<RecommendedWatcher>,
 }
 
-// Check active_profile.txt to figure out which config file to reload.
-// Falls back to init.lua if no profile is set.
 fn resolve_active_config_path(config_dir: &std::path::Path, default_path: &std::path::Path) -> PathBuf {
-    let profile_marker = config_dir.join("active_profile.txt");
-    if let Ok(name) = std::fs::read_to_string(&profile_marker) {
-        let name = name.trim();
-        if !name.is_empty() {
-            let profile_path = config_dir.join("profiles").join(format!("{name}.lua"));
-            if profile_path.exists() {
-                return profile_path;
-            }
+    let name = match crate::profile_override() {
+        Some(n) => n,
+        None => std::fs::read_to_string(config_dir.join("active_profile.txt"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+    };
+    if !name.is_empty() {
+        let profile_path = config_dir.join("profiles").join(format!("{name}.lua"));
+        if profile_path.exists() {
+            return profile_path;
         }
     }
     default_path.to_path_buf()

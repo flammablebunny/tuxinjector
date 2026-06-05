@@ -47,30 +47,38 @@ pub fn render(
         config.profile.clone()
     };
 
+    let pinned = tuxinjector_config::profile_override().is_some();
+
     ui.text("Active Profile:");
     ui.same_line();
     ui.set_next_item_width(200.0);
-    if let Some(_token) = ui.begin_combo("##profile_select", &cur_label) {
-        if ui.selectable_config("(Default)")
-            .selected(config.profile.is_empty())
-            .build()
-        {
-            if !config.profile.is_empty() {
-                *profile_switch = Some(String::new());
-                state.confirm_delete = false;
-            }
-        }
-        for name in profile_list {
-            if ui.selectable_config(name)
-                .selected(config.profile == *name)
+    {
+        let _dis = ui.begin_disabled(pinned);
+        if let Some(_token) = ui.begin_combo("##profile_select", &cur_label) {
+            if ui.selectable_config("(Default)")
+                .selected(config.profile.is_empty())
                 .build()
             {
-                if config.profile != *name {
-                    *profile_switch = Some(name.clone());
+                if !config.profile.is_empty() {
+                    *profile_switch = Some(String::new());
                     state.confirm_delete = false;
                 }
             }
+            for name in profile_list {
+                if ui.selectable_config(name)
+                    .selected(config.profile == *name)
+                    .build()
+                {
+                    if config.profile != *name {
+                        *profile_switch = Some(name.clone());
+                        state.confirm_delete = false;
+                    }
+                }
+            }
         }
+    }
+    if pinned && ui.is_item_hovered_with_flags(imgui::ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+        ui.tooltip_text("Profile pinned by --profile in the launch command");
     }
 
     ui.same_line();

@@ -122,18 +122,27 @@ pub fn init_config() -> Option<ConfigWatcher> {
         let _ = tx.config_dir.set(dir.to_path_buf());
     }
 
-    // Check if there's an active profile to load instead of init.lua
+    // Pick the profile to load. A per-instance `--profile <name>` launch override
+    // wins over the shared active_profile.txt (and is never written back to it, so
+    // instances don't clobber each other's selection). Empty name = default.
+    let profile_override = tuxinjector_config::profile_override();
     let load_path = if let Some(dir) = path.parent() {
-        let active = crate::lua_writer::load_active_profile(dir);
+        let active = profile_override
+            .clone()
+            .unwrap_or_else(|| crate::lua_writer::load_active_profile(dir));
+        let overridden = profile_override.is_some();
         if !active.is_empty() {
             if let Some(src) = crate::lua_writer::load_profile_source(dir, &active) {
                 let profile_path = dir.join("profiles").join(format!("{active}.lua"));
-                tracing::info!(profile = %active, "loading active profile");
+                tracing::info!(profile = %active, overridden, "loading active profile");
                 boot_lua(tx, &snapshot, &profile_path, &src, &active);
                 profile_path
             } else {
-                tracing::warn!(profile = %active, "active profile file not found, falling back to default");
-                crate::lua_writer::save_active_profile(dir, "");
+                tracing::warn!(profile = %active, overridden, "profile file not found, falling back to default");
+                // don't reset the shared marker when the miss came from a launch override
+                if !overridden {
+                    crate::lua_writer::save_active_profile(dir, "");
+                }
                 load_default(tx, &snapshot, &path);
                 path.clone()
             }
