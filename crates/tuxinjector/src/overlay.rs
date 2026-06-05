@@ -1141,6 +1141,11 @@ impl OverlayState {
     }
 
     pub fn switch_mode(&mut self, mode_id: &str) {
+        // While the tux GUI is open, swallow all mode/resize switches
+        if tuxinjector_input::gui_is_visible() {
+            tracing::debug!(mode_id, "switch_mode ignored: tux GUI is open");
+            return;
+        }
         let cfg = self.config.load();
         let (orig_w, orig_h) = crate::viewport_hook::get_original_size();
         if orig_w > 0 && orig_h > 0 {
