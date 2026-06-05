@@ -128,14 +128,21 @@ float sdRoundedRect(vec2 p, vec2 halfSize, float r) {
 }
 
 void main() {
-    vec2 centre = uRect.xy + uRect.zw * 0.5;
+    vec2 p = fragCoord - (uRect.xy + uRect.zw * 0.5);
     vec2 halfSize = uRect.zw * 0.5;
-    float r = min(uRadius, min(halfSize.x, halfSize.y));
-    float d = sdRoundedRect(fragCoord - centre, halfSize, r);
     float halfBW = uBorderWidth * 0.5;
-    float outer_mask = 1.0 - smoothstep(halfBW - 0.5, halfBW + 0.5, d);
-    float inner_mask = smoothstep(-halfBW - 0.5, -halfBW + 0.5, d);
-    float mask = outer_mask * inner_mask;
+    float mask;
+    if (uRadius <= 0.0) {
+        vec2 a = abs(p);
+        float d = max(a.x - halfSize.x, a.y - halfSize.y);
+        mask = (d >= -halfBW && d <= halfBW) ? 1.0 : 0.0;
+    } else {
+        float r = min(uRadius, min(halfSize.x, halfSize.y));
+        float d = sdRoundedRect(p, halfSize, r);
+        float outer_mask = 1.0 - smoothstep(halfBW - 0.5, halfBW + 0.5, d);
+        float inner_mask = smoothstep(-halfBW - 0.5, -halfBW + 0.5, d);
+        mask = outer_mask * inner_mask;
+    }
     if (mask <= 0.0) {
         discard;
     }
