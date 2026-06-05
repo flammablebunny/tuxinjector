@@ -93,17 +93,23 @@ home.packages = [
 
 Rebuild your system (`nixos-rebuild switch`).
 
+!!! note "Pre-built & speedrun-legal"
+    The flake installs the **official pre-built** `.so` fetched from the GitHub release and verified by SHA-512 - it does **not** compile Tuxinjector locally. A locally compiled build has a different hash and is **not** legal for MCSR Ranked / speedrun.com submissions, which is why the package fetches the released binary. On aarch64, use `inputs.tuxinjector.packages.aarch64-linux.default` instead.
+
 ### Prism Launcher Setup
 
 Set the **Wrapper Command** in Prism Launcher to:
 
 ```
-tuxinjector
+tuxinjector-wrapper
 ```
 
-That's all. The wrapper sets `LD_PRELOAD` and `TUXINJECTOR_X11_LIBS` automatically, so companion apps can find the X11 libraries they need.
+That's all. The `tuxinjector-wrapper` sets `LD_PRELOAD`, `TUXINJECTOR_X11_LIBS`, and `TUXINJECTOR_XVFB` automatically, so companion apps can find the X11 libraries and the Xvfb server they need.
 
 !!! note
-    The wrapper is Garbage Collector rooted by your system closure, so the library paths it references won't be garbage collected.
+    The wrapper is Garbage Collector rooted by your system closure, so the library paths it references (including `Xvfb`) won't be garbage collected.
+
+!!! note "Companion apps & Xvfb"
+    Companion apps (NinjaBrain Bot, etc.) run inside a private headless **Xvfb** server that Tuxinjector starts for them. On NixOS the flake pulls `Xvfb` in and the wrapper points `TUXINJECTOR_XVFB` at it automatically, so this just works with no extra setup. See [Companion Apps](companion-apps.md) for details.
 
 <!-- TODO: Update this for MCSR Launcher, hopefully by using the Tools Tab just like how toolscreen does it ^_^ -->

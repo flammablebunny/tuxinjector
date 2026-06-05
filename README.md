@@ -2,7 +2,7 @@
 
 > **Tuxinjector is NOT legal to use in speedrun.com submissions or MCSR Ranked yet. Do not use it in runs you intend to submit or in ranked matches.**
 
-Tux Injector is an overlay written in Rust that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.
+Tux Injector is an overlay written in Rust that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead. The overlay can render resizable game-view mirrors, image overlays, captured app/windows, and - on Linux x86_64/aarch64 - live browser overlays.
 
 **[Full documentation](https://flammablebunny.github.io/tuxinjector/)**
 
@@ -82,7 +82,7 @@ return {
 }
 ```
 
-Hot-reload is supported - editing any config file (including profile files in `profiles/`) while the game is running applies changes immediately without needing to restart. Profiles can also be switched live through the in-game GUI.
+Hot-reload is supported - editing any config file (including profile files in `profiles/`) while the game is running applies changes immediately without needing to restart. Profiles can also be switched live through the in-game GUI, or pinned per game instance with the `--profile <name>` launch flag (or the `TUXINJECTOR_PROFILE` environment variable).
 
 The [Lua API reference](https://flammablebunny.github.io/tuxinjector/api/) covers all the scripting functions for keybinds, mode switching, sensitivity, and more.
 
@@ -90,7 +90,7 @@ The [Lua API reference](https://flammablebunny.github.io/tuxinjector/api/) cover
 
 ## Crate Structure
 
-Tuxinjector is set up as a Rust workspace split into 12 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
+Tuxinjector is set up as a Rust workspace split into 12 crates, plus a separate `tuxinjector-browser` helper binary (built on its own, not a workspace member). Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
 
 | Crate | Purpose |
 |-------|---------|
@@ -104,6 +104,7 @@ Tuxinjector is set up as a Rust workspace split into 12 crates. Splitting things
 | `tuxinjector-lua` | Lua scripting runtime, hotkey actions, config loader |
 | `tuxinjector-capture` | Window overlay capture: PipeWire on Linux, CoreGraphics on macOS |
 | `tuxinjector-plugin-api` | C ABI plugin trait, `declare_plugin!` macro |
+| `tuxinjector-browser` | Standalone WebKitGTK helper for browser overlays (Linux x86_64/aarch64 only; built separately, not a workspace member) |
 | `imgui-glow-renderer` | Local fork of imgui-glow-renderer with GLSL 1.20 shader path for macOS GL 2.1 |
 | `libspa` | Local fork of libspa with 32-bit cross-compilation fix (missing `flags` field on older PipeWire headers) |
 
@@ -124,6 +125,8 @@ nix develop
 # Ensure pkg-config and OpenGL dev headers are installed
 ./build.sh
 ```
+
+On Linux, building the optional `tuxinjector-browser` helper (for browser overlays) additionally needs WebKitGTK 4.1 and GTK 3 dev packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`).
 
 On Linux this produces an architecture-suffixed binary (e.g. `target/release/tuxinjector_x64.so`, `tuxinjector_aarch64.so`, `tuxinjector_aarch32.so`, or `tuxinjector_x86.so`).
 On macOS this produces `target/release/tuxinjector.dylib` as a universal binary (Nix store rpaths are rewritten to system paths automatically).

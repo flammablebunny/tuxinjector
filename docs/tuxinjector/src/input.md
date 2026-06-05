@@ -103,6 +103,12 @@ Reverse map: (to_key, from_key)    -- used in glfwGetKey/glfwGetMouseButton poll
 
 When a key event comes in, the forward map translates the physical keycode to the logical one. When the game polls a key via `glfwGetKey`, the reverse map goes the other way.
 
+### Per-Context Targets
+
+Each rebind has **two** targets - one for when you're playing (`toKey`) and one for when a menu/chat is open (`toKeyChat`). A target of `0` means **pass the key through unchanged** in that context (rather than "use the other target"), so a chat-only rebind (`toKey = 0`, `toKeyChat` set) is valid and leaves the key untouched in-game.
+
+The context is taken from the [game-state mod](state-mods.md) tag when one is available, and otherwise falls back to the live cursor-capture state (`effective_in_chat` -> `!is_cursor_captured()`): grabbed = in-game, free = chat/menu. This fallback is what makes rebinds work even without a state mod installed.
+
 ### Cross-Device Rebinding
 
 Things get interesting when you rebind across device types (mouse to keyboard or vice versa), because `glfwGetKey` and `glfwGetMouseButton` need to be cross-routed:
@@ -136,6 +142,9 @@ Combo keys:
 ```
 
 The reverse direction also works - if a keyboard key is rebound to a mouse button, `glfwGetMouseButton` gets routed to poll the keyboard key via `glfwGetKey`.
+
+!!! note "Stable chords with rebound keys"
+    The logical key that `glfwGetKey` reports for a physical key is **pinned at PRESS time** and held until release. This stops a RELEASE/REPEAT from desyncing to a different key if the rebind context flips mid-press, and is what makes Minecraft's F3 chords (F3+C, F3+F, …) resolve correctly even when the keys involved are rebound.
 
 ---
 
@@ -173,6 +182,8 @@ Cursor event (x, y):
 
 Sensitivity can be set globally, per-mode, or through Lua hotkey actions.
 
+The sub-pixel accumulator (the fractional remainder of a scaled delta) is **reset** whenever sensitivity changes - via a hotkey or a mode switch - and whenever the cursor reverses direction on an axis. This prevents a one-frame jump when you swap sensitivity mid-session, matching Toolscreen's behaviour.
+
 ### Cursor State Tracking
 
 `glfwSetInputMode` is intercepted to know whether the cursor is captured (`GLFW_CURSOR_DISABLED`) or free (`GLFW_CURSOR_NORMAL`):
@@ -183,6 +194,10 @@ Sensitivity can be set globally, per-mode, or through Lua hotkey actions.
 | `GLFW_CURSOR_NORMAL` (Menu) | Inactive | Already visible |
 
 When the GUI opens during FPS mode, we force the cursor to `GLFW_CURSOR_NORMAL`. When it closes, we restore `GLFW_CURSOR_DISABLED`. If the game tries to re-capture the cursor while the GUI is open, we just block that call.
+
+### Menu-Open Recentering (ICM)
+
+When the game opens an in-game menu - the cursor transitions from grabbed (`GLFW_CURSOR_DISABLED`) to free (`GLFW_CURSOR_NORMAL`) - Tuxinjector re-centers the cursor using a stashed pointer to the real `glfwSetCursorPos`. This defeats *involuntary cursor manipulation* (ICM): the small leftover cursor movement that can otherwise nudge your view or a menu selection on the frame a menu opens. The real `glfwSetCursorPos` and `glfwGetWindowSize` pointers are stashed specifically for this.
 
 ---
 
@@ -211,6 +226,12 @@ Scroll + GUI visible:
 
 The GUI state flags (`GUI_VISIBLE`, `GUI_WANTS_KEYBOARD`, `GUI_CAPTURE_MODE`) are all atomic booleans, so they're lock-free and can be read from any thread.
 
+A few guarantees while the GUI is open:
+
+- `glfwGetKey` / `glfwGetMouseButton` polling returns `GLFW_RELEASE`, so a key held when you opened the GUI doesn't leak through to the game via polling.
+- `Shift` is **not** forwarded as a modifier with scroll events to imgui (otherwise Shift+Scroll becomes horizontal scroll in the GUI).
+- `glfwGetCursorPos` applies the viewport-centering offset in non-fullscreen modes, so the game and GUI receive cursor coordinates in the correct viewport space.
+
 ---
 
 ## Key State Tracking
@@ -225,5 +246,5 @@ fn update_key_state(key: i32, action: i32) {
         pressed_keys.remove(key)
 }
 
-// Lua: ts.get_key("w") -> is_key_pressed(87) -> pressed_keys.contains(87)
+// Lua: tx.get_key("w") -> is_key_pressed(87) -> pressed_keys.contains(87)
 ```

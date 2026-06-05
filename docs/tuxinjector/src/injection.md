@@ -77,8 +77,9 @@ Full list of everything we intercept:
 | Category | Symbols |
 |----------|---------|
 | **Swap** | `eglSwapBuffers`, `glXSwapBuffers` (Linux); `glfwSwapBuffers` (macOS); `eglGetProcAddress`, `glXGetProcAddressARB` |
-| **GLFW callbacks** | `glfwSetKeyCallback`, `glfwSetMouseButtonCallback`, `glfwSetCursorPosCallback`, `glfwSetScrollCallback`, `glfwSetCharCallback`, `glfwSetCharModsCallback`, `glfwSetInputMode`, `glfwSetFramebufferSizeCallback` |
-| **GLFW polling** | `glfwGetKey`, `glfwGetMouseButton`, `glfwGetCursorPos`, `glfwGetFramebufferSize`, `glfwGetProcAddress` |
+| **GLFW callbacks** | `glfwSetKeyCallback`, `glfwSetMouseButtonCallback`, `glfwSetCursorPosCallback`, `glfwSetScrollCallback`, `glfwSetCharCallback`, `glfwSetCharModsCallback`, `glfwSetInputMode`, `glfwSetFramebufferSizeCallback`, `glfwSetWindowSizeCallback` |
+| **GLFW polling** | `glfwGetKey`, `glfwGetMouseButton`, `glfwGetCursorPos`, `glfwGetFramebufferSize`, `glfwGetWindowSize`, `glfwGetKeyScancode`, `glfwGetProcAddress` |
+| **GLFW window/cursor** | `glfwSetCursorPos` (menu-open ICM recenter), `glfwSetClipboardString` (F3+C clipboard bridge to the companion Xvfb), `glfwSetWindowTitle` (window-title state fallback) |
 | **GL functions** | `glViewport`, `glScissor`, `glBindFramebuffer` (+ EXT/ARB), `glDrawBuffer`, `glReadBuffer`, `glDrawBuffers`, `glBlitFramebuffer` |
 
 ---
@@ -154,6 +155,22 @@ Original function mode is preferred since it sidesteps compatibility issues with
 
 ---
 
+## Launch Flags & Environment Variables
+
+Because Tuxinjector lives inside the game process, it can read that process's own command line and environment, so a few options are set on the launch (wrapper) command:
+
+| Flag / Variable | Purpose |
+|-----------------|---------|
+| `--profile <name>` / `--profile=<name>` | Pin a config profile for this instance, overriding the shared `active_profile.txt` without writing it back. See [Profiles](config/profiles.md). |
+| `TUXINJECTOR_PROFILE` | Environment-variable fallback for `--profile`. |
+| `TUXINJECTOR_XVFB` | Absolute path to the `Xvfb` binary used to host [companion apps](companion-apps.md) when it isn't on the game's `PATH` (e.g. NixOS wrappers). |
+
+Profile resolution order: `--profile=<name>` > `--profile <name>` > `TUXINJECTOR_PROFILE` > `active_profile.txt`. `--profile ''` forces the default profile.
+
+Companion-app key injection (XTEST into the private Xvfb) and the F3+C clipboard bridge (`glfwSetClipboardString` hook) are covered in [Companion Apps](companion-apps.md).
+
+---
+
 ## First-Frame Initialisation
 
 All the heavy init is deferred to the first frame, when the GL context is actually current. Before that point there's no GL context, so creating shaders/textures/FBOs would just fail.
@@ -165,7 +182,8 @@ First SwapBuffers call:
     2. Create GlOverlayRenderer (compile shaders, allocate FBOs)
     3. Load config from ~/.config/tuxinjector/init.lua
     4. Register input handler with hotkey engine
-    5. Discover and load plugins from ~/.local/share/tuxinjector/plugins/
+    5. Discover and load plugins (.so from ~/.local/share/tuxinjector/plugins/ on
+       Linux, .dylib from ~/.config/tuxinjector/plugins/ on macOS)
     6. Install inline glViewport/glBindFramebuffer hooks (runtime patching)
     7. INITIALIZED = true
 ```

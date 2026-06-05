@@ -20,6 +20,10 @@ GOT/PLT patching works by modifying the game's Global Offset Table in memory to 
 
 The one exception on Linux is `glfwGetProcAddress`, which is handled via PLT exports because LWJGL3's `RTLD_DEEPBIND` would bypass `dlsym` interception for symbols resolved through GLFW's own loader. This isn't needed on macOS since `RTLD_DEEPBIND` doesn't exist there.
 
+### GLX on NVIDIA
+
+GL-function resolution differs between Mesa and NVIDIA. Our hook resolves `glXGetProcAddressARB` via `RTLD_NEXT` first (which works on Mesa), then falls back to a `dlopen`/`RTLD_DEFAULT` lookup - because NVIDIA splits GLX and GL across separate libraries, and without that fallback GL context creation fails on NVIDIA.
+
 ---
 
 ## Why direct GL rendering instead of Vulkan?
@@ -53,6 +57,14 @@ So `dlsym` interception alone isn't enough for GLFW functions. The `#[no_mangle]
 So it's a dual-path thing: `dlsym` hook catches lookups made through `dlsym()`, and PLT exports catch the rest via direct dynamic linking.
 
 On macOS, none of this is needed - `__DATA,__interpose` handles all symbol interposition uniformly, and `RTLD_DEEPBIND` doesn't exist on Darwin.
+
+---
+
+## Why inline-patch Mesa's glViewport/glBindFramebuffer? (Linux)
+
+`dlsym` interposition and PLT exports cover symbols the game resolves through `dlsym`/dynamic linking - but on **libglvnd/Mesa**, GL entry points like `glViewport` and `glBindFramebuffer` are dispatched through libglvnd's own vendor table, so neither path reliably catches them. For the two calls that viewport-centering depends on, tuxinjector therefore **inline-patches the real Mesa function in memory**: it copies the original prologue into an executable trampoline (handling newer Mesa's rip-relative TLS dispatch with a fixup trampoline) and overwrites the first bytes with an absolute `jmp` to our hook. If the prologue is an unrecognized shape, the patch is skipped rather than risk corrupting the function.
+
+This is **Linux x86_64 only**. To avoid paying any overhead when centering isn't needed, the patches are removed at runtime (`unpatch_inline_hooks`) whenever a Fullscreen / native-resolution mode is active, and re-applied (`repatch_inline_hooks`) on switching to a resized mode - restoring native GL call speed in Fullscreen. With the active [`center_game_content`](rendering.md#mode-system-content-centering) present, the `glViewport`/`glScissor` hooks themselves are pure pass-throughs.
 
 ---
 

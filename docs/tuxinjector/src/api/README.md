@@ -22,6 +22,14 @@ By default, tuxinjector reads and executes a configuration file from
 `~/.config/tuxinjector/init.lua`. Additional profiles are stored in
 `~/.config/tuxinjector/profiles/<name>.lua` and can be switched via the in-game GUI.
 
+You can also **pin a profile for a single game instance** by adding `--profile <name>`
+to the game's launch command (or setting the `TUXINJECTOR_PROFILE` environment
+variable). A pinned profile overrides the shared `active_profile.txt`, is never
+written back to it (so multiple instances can run different profiles without
+clobbering each other), and **greys out the in-game GUI profile selector** for
+that instance. Use `--profile ''` to force the default (`init.lua`). See
+[Profiles](../config/profiles.md) for details.
+
 The config file has to return a table with all the display, input, overlay,
 hotkey, and mode settings. You can also use the API module to register keybindings and call runtime functions:
 
@@ -49,3 +57,7 @@ directory (including profile files in `profiles/`). When it detects a change, it
 automatically reloads the currently active config - whether that's `init.lua` or
 a named profile. The Lua VM is destroyed and recreated, so any state within will
 not be transferred to the new configuration.
+
+If a profile has been pinned with `--profile` (or `TUXINJECTOR_PROFILE`),
+hot-reload reloads that pinned profile rather than whatever `active_profile.txt`
+currently points to.

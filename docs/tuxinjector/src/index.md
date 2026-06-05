@@ -1,6 +1,6 @@
 # Introduction
 
-**Docs Version:** 1.1
+**Docs Version:** 1.5
 **Project:** Tuxinjector - Injection based minecraft speedrunning tool
 **Stack:** Rust / OpenGL (GLSL 300 ES on Linux, 1.20 on macOS) / GLFW interception / Lua config / imgui-rs
 
@@ -13,7 +13,7 @@
 
 ## What is Tuxinjector?
 
-Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead.
+Tuxinjector is a Rust overlay that injects into Minecraft's rendering pipeline on Linux and macOS. It uses `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) to hook into the game's OpenGL and GLFW calls, rendering directly into the backbuffer with no external capture or compositing overhead. The overlay can render resizable game-view mirrors, image overlays, captured app/windows, and - on Linux x86_64/aarch64 - live [browser overlays](browser-overlays.md).
 
 ## How It Works
 
@@ -39,7 +39,7 @@ On macOS the hook mechanism is slightly different: `dlsym` itself is interposed 
 
 ## Crate Structure
 
-Tuxinjector is set up as a Rust workspace split into 12 crates. Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
+Tuxinjector is set up as a Rust workspace split into 12 crates, plus a separate `tuxinjector-browser` helper binary (built on its own, not a workspace member). Splitting things up keeps compile times low and isolates the unsafe GL stuff from everything else.
 
 | Crate | Purpose |
 |-------|---------|
@@ -53,6 +53,7 @@ Tuxinjector is set up as a Rust workspace split into 12 crates. Splitting things
 | `tuxinjector-lua` | Lua scripting runtime, hotkey actions, config loader |
 | `tuxinjector-capture` | Window overlay capture: PipeWire on Linux, CoreGraphics on macOS |
 | `tuxinjector-plugin-api` | C ABI plugin trait, `declare_plugin!` macro |
+| `tuxinjector-browser` | Standalone WebKitGTK helper process for browser overlays (Linux x86_64/aarch64 only; built separately, not a workspace member) |
 | `imgui-glow-renderer` | Local fork of imgui-glow-renderer with GLSL 1.20 shader path for macOS GL 2.1 |
 | `libspa` | Local fork of libspa with 32-bit cross-compilation fix (missing `flags` field on older PipeWire headers) |
 

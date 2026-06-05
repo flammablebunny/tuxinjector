@@ -47,6 +47,12 @@ markdown_extensions:
 nav:
   - Introduction: index.md
   - Installation & Usage: installation.md
+  - Companion Apps: companion-apps.md
+  - Browser Overlays: browser-overlays.md
+  - Game-State Mods: state-mods.md
+  - Configuration:
+    - Profiles: config/profiles.md
+    - Mode Backgrounds: config/backgrounds.md
   - Architecture:
     - Injection & Hooking: injection.md
     - OpenGL Rendering: rendering.md
