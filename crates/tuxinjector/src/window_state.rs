@@ -31,23 +31,21 @@ pub unsafe extern "C" fn hooked_glfw_set_window_title(
     if !title.is_null() {
         if let Ok(s) = CStr::from_ptr(title).to_str() {
             let state = title_to_state(s);
-            let changed = if let Ok(mut guard) = crate::state::get().game_state.lock() {
-                if guard.as_str() != state {
-                    tracing::debug!(title = s, game_state = state, "game state changed (title)");
-                    *guard = state.to_string();
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
 
-            // don't override if wpstateout already set something more specific
-            if changed {
-                let cur = tuxinjector_lua::get_game_state();
-                let is_title_derived = matches!(cur.as_str(), "" | "menu" | "ingame");
-                if is_title_derived && tuxinjector_lua::update_game_state(state) {
+            // The window title is only a coarse fallback. If a more specific
+            // source (wpstateout via state_watcher) is active, it owns the state
+            // and we must NOT clobber it — otherwise a title change would flip
+            // "inworld,cursor_grabbed" back to "ingame" until the next poll,
+            // breaking every state-conditioned hotkey for that window. Only act
+            // while the current state is itself title-derived ("" / menu / ingame).
+            let cur = tuxinjector_lua::get_game_state();
+            let title_derived = matches!(cur.as_str(), "" | "menu" | "ingame");
+            if title_derived && cur.as_str() != state {
+                tracing::debug!(title = s, game_state = state, "game state changed (title)");
+                if let Ok(mut guard) = crate::state::get().game_state.lock() {
+                    *guard = state.to_string();
+                }
+                if tuxinjector_lua::update_game_state(state) {
                     let tx = crate::state::get();
                     if let Some(rt) = tx.lua_runtime.get() {
                         let _ = rt.state_event_tx.try_send(state.to_string());
