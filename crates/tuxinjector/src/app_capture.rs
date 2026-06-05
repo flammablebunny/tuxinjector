@@ -25,15 +25,43 @@ const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 // tux owns, unlike the host Xwayland.
 static APP_KEY_QUEUE: std::sync::Mutex<Vec<(u8, bool)>> = std::sync::Mutex::new(Vec::new());
 
-// GLFW (Wayland backend) reports evdev scancodes; the X11 keycode is evdev + 8.
-// NBB's JNativeHook reports that same X keycode as each hotkey's rawCode, so the
-// injected keycode matches the stored binding directly — no GLFW→JNH table.
 const EVDEV_X_KEYCODE_OFFSET: i32 = 8;
 
+/// Offset to turn a GLFW scancode into the X11 keycode the Xvfb expects.
+///
+/// GLFW's *Wayland* backend reports evdev scancodes (X keycode = evdev + 8),
+/// but its *X11* backend (Xorg, or LWJGL/GLFW choosing X11 on XWayland) already
+/// reports X keycodes (offset 0). Hardcoding +8 injects the wrong key on X11
+/// (e.g. `0` -> evdev 11 vs X keycode 19; +8 turns 19 into 27 = `r`).
+///
+/// Escape's X keycode is always 9 (evdev 1 + 8), so the live offset is simply
+/// `9 - glfwGetKeyScancode(GLFW_KEY_ESCAPE)`: 8 on Wayland (esc=1), 0 on X11
+/// (esc=9). Cached once the GLFW pointer is resolved; until then assume Wayland.
+fn x_keycode_offset() -> i32 {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    const GLFW_KEY_ESCAPE: i32 = 256;
+    static CACHED: AtomicI32 = AtomicI32::new(i32::MIN);
+
+    let cached = CACHED.load(Ordering::Relaxed);
+    if cached != i32::MIN {
+        return cached;
+    }
+    match tuxinjector_input::callbacks::canonical_scancode(GLFW_KEY_ESCAPE) {
+        Some(esc) if (1..=9).contains(&esc) => {
+            let offset = 9 - esc;
+            CACHED.store(offset, Ordering::Relaxed);
+            tracing::info!(esc_scancode = esc, offset, "companion: X keycode offset (GLFW backend)");
+            offset
+        }
+        // Pointer not resolved yet (or odd value): assume Wayland, retry next key.
+        _ => EVDEV_X_KEYCODE_OFFSET,
+    }
+}
+
 /// Queue a key press/release for XTEST injection into companion apps (e.g. NBB).
-/// `scancode` is the GLFW (evdev) scancode; we convert it to the X11 keycode.
+/// `scancode` is the GLFW scancode; we convert it to the X11 keycode.
 pub fn push_app_key(_key: i32, scancode: i32, _mods: i32, pressed: bool) {
-    let keycode = scancode + EVDEV_X_KEYCODE_OFFSET;
+    let keycode = scancode + x_keycode_offset();
     if scancode <= 0 || keycode > 255 {
         return;
     }
