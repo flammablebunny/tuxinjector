@@ -92,7 +92,7 @@ fn spawn_xvfb() -> Option<(u32, Child)> {
             }
             Err(e) => {
                 tracing::error!(%e, bin = %bin,
-                    "failed to spawn Xvfb - set TUXINJECTOR_XVFB to its path in the wrapper");
+                    "failed to spawn Xvfb - please install Xvfb. if not on PATH set TUXINJECTOR_XVFB to its path in the wrapper");
                 return None;
             }
         }
