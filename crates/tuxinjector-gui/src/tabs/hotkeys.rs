@@ -38,6 +38,18 @@ pub fn render(
         }
     }
 
+    // No game-state mod -> "Required Game States" conditions can never match.
+    if crate::state_mod_status() == crate::StateModStatus::Missing {
+        crate::widgets::text_wrapped_colored(
+            ui,
+            [1.0, 0.5, 0.2, 1.0],
+            "No game-state mod detected. Hotkeys with a \"Required Game States\" condition \
+             will never fire (only \"Any\" works). Install the Hermes or State Output mods \
+             so tuxinjector can read the instance state.",
+        );
+        ui.dummy([0.0, 4.0]);
+    }
+
     if let Some(idx) = state.selected {
         if idx >= config.hotkeys.mode_hotkeys.len() {
             state.selected = None;
