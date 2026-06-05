@@ -380,6 +380,44 @@ fn bg_editor(
         if ui.input_text("##bg_image_path", &mut bg.image).build() {
             *dirty = true;
         }
+        ui.text("(absolute path or ~/...; relative names won't resolve)");
+
+        ui.text("Fit:");
+        ui.same_line();
+        ui.set_next_item_width(200.0);
+        let fits = [
+            ("fill", "Fill (cover, crop)"),
+            ("fit", "Fit (letterbox)"),
+            ("stretch", "Stretch"),
+            ("center", "Center"),
+        ];
+        let cur = fits.iter().find(|(k, _)| *k == bg.image_fit)
+            .map(|(_, label)| *label)
+            .unwrap_or("Fill (cover, crop)");
+        if let Some(_token) = ui.begin_combo("##bg_image_fit", cur) {
+            for (key, label) in fits {
+                if ui.selectable_config(label)
+                    .selected(bg.image_fit == key)
+                    .build()
+                {
+                    bg.image_fit = key.to_string();
+                    *dirty = true;
+                }
+            }
+        }
+
+        if bg.image_fit == "fit" || bg.image_fit == "center" {
+            let mut rgba = [bg.color.r, bg.color.g, bg.color.b, bg.color.a];
+            ui.text("Matte:");
+            ui.same_line();
+            if ui.color_edit4("##bg_image_matte", &mut rgba) {
+                bg.color.r = rgba[0];
+                bg.color.g = rgba[1];
+                bg.color.b = rgba[2];
+                bg.color.a = rgba[3];
+                *dirty = true;
+            }
+        }
     } else if bg.selected_mode == "gradient" {
         use tuxinjector_config::types::GradientColorStop;
 

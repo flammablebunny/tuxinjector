@@ -158,6 +158,9 @@ pub struct BackgroundConfig {
     pub selected_mode: String,
     #[serde(default)]
     pub image: String,
+    /// How the background image is scaled: "fill" | "fit" | "stretch" | "center".
+    #[serde(default = "defaults::background_image_fit")]
+    pub image_fit: String,
     #[serde(default)]
     pub color: Color,
     #[serde(default)]
@@ -177,6 +180,7 @@ impl Default for BackgroundConfig {
         Self {
             selected_mode: defaults::background_selected_mode(),
             image: String::new(),
+            image_fit: defaults::background_image_fit(),
             color: Color::TRANSPARENT,
             gradient_stops: Vec::new(),
             gradient_angle: 0.0,

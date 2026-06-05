@@ -109,7 +109,34 @@ pub enum BackgroundSpec {
     },
     Image {
         path: String,
+        fit: BgFit,
+        /// Matte color shown behind letterboxed images (Fit/Center modes).
+        matte: [f32; 4],
     },
+}
+
+/// How a background image is scaled to the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgFit {
+    /// Cover the screen, preserve aspect, center-crop overflow (default).
+    Fill,
+    /// Fit inside the screen, preserve aspect, letterbox the remainder.
+    Fit,
+    /// Stretch to the screen, ignoring aspect.
+    Stretch,
+    /// Native size, centered (crops if larger, letterboxes if smaller).
+    Center,
+}
+
+impl BgFit {
+    fn parse(s: &str) -> Self {
+        match s {
+            "fit" => BgFit::Fit,
+            "stretch" => BgFit::Stretch,
+            "center" => BgFit::Center,
+            _ => BgFit::Fill,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -876,7 +903,11 @@ fn build_background(bg: &BackgroundConfig) -> BackgroundSpec {
             }
         }
         "color" => BackgroundSpec::SolidColor(bg.color.to_array()),
-        "image" if !bg.image.is_empty() => BackgroundSpec::Image { path: bg.image.clone() },
+        "image" if !bg.image.is_empty() => BackgroundSpec::Image {
+            path: bg.image.clone(),
+            fit: BgFit::parse(&bg.image_fit),
+            matte: bg.color.to_array(),
+        },
         _ => BackgroundSpec::None,
     }
 }

@@ -59,12 +59,31 @@ fn pad_pixels(w: u32, h: u32, pixels: &[u8], pad: u32) -> (u32, u32, Vec<u8>) {
 }
 
 use crate::mirror_capture::MirrorCaptureManager;
-use crate::mode_system::{BackgroundSpec, FrameLayout, ModeSystem, parse_relative_to};
+use crate::mode_system::{BackgroundSpec, BgFit, FrameLayout, ModeSystem, parse_relative_to};
 use crate::state;
 use crate::render_thread::{SceneDescription, SceneElement};
 
 const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
 const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
+
+// Texture upload constants for the cached background image.
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_RGBA: u32 = 0x1908;
+const GL_RGBA8: u32 = 0x8058;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_LINEAR: u32 = 0x2601;
+const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
+const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
+const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+const GL_CLAMP_TO_EDGE: u32 = 0x812F;
+// UNPACK pixel-store state the game/our mirror PBOs can leave dirty, which would
+// make tex_image_2d read garbage (PBO offset / wrong row stride).
+const GL_PIXEL_UNPACK_BUFFER: u32 = 0x88EC;
+const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+const GL_UNPACK_ROW_LENGTH: u32 = 0x0CF2;
+const GL_UNPACK_SKIP_ROWS: u32 = 0x0CF3;
+const GL_UNPACK_SKIP_PIXELS: u32 = 0x0CF4;
 
 // --- window overlay capture ---
 
@@ -316,6 +335,10 @@ struct BgImageCache {
     loaded_path: String,
     mtime: Option<std::time::SystemTime>,
     last_check: Instant,
+    // GL texture mirroring `pixels`, (re)uploaded only when the CPU image changes.
+    gl_texture: u32,
+    uploaded_path: String,
+    uploaded_mtime: Option<std::time::SystemTime>,
 }
 
 impl BgImageCache {
@@ -325,7 +348,57 @@ impl BgImageCache {
             loaded_path: String::new(),
             mtime: None,
             last_check: Instant::now(),
+            gl_texture: 0,
+            uploaded_path: String::new(),
+            uploaded_mtime: None,
         }
+    }
+
+    /// Ensure the CPU image for `path` is loaded and uploaded to `gl_texture`,
+    /// re-uploading only when the decoded pixels change. Returns the live
+    /// texture id + dimensions, or None if the image is empty/unloadable.
+    unsafe fn ensure_texture(&mut self, gl: &GlFunctions, path: &str) -> Option<(u32, u32, u32)> {
+        // Loads/refreshes self.pixels via the existing mtime-aware cache.
+        if self.get(path).is_none() {
+            return None;
+        }
+        let stale = self.gl_texture == 0
+            || self.uploaded_path != self.loaded_path
+            || self.uploaded_mtime != self.mtime;
+        if stale {
+            if self.gl_texture == 0 {
+                let mut t = 0u32;
+                (gl.gen_textures)(1, &mut t);
+                self.gl_texture = t;
+            }
+            let px = self.pixels.as_ref()?;
+            (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
+            (gl.pixel_store_i)(GL_UNPACK_ALIGNMENT, 4);
+            (gl.pixel_store_i)(GL_UNPACK_ROW_LENGTH, 0);
+            (gl.pixel_store_i)(GL_UNPACK_SKIP_ROWS, 0);
+            (gl.pixel_store_i)(GL_UNPACK_SKIP_PIXELS, 0);
+            (gl.bind_texture)(GL_TEXTURE_2D, self.gl_texture);
+            (gl.tex_image_2d)(
+                GL_TEXTURE_2D, 0, GL_RGBA8 as i32,
+                self.w as i32, self.h as i32, 0,
+                GL_RGBA, GL_UNSIGNED_BYTE,
+                px.as_ptr() as *const std::ffi::c_void,
+            );
+            (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
+            (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
+            (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as i32);
+            (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as i32);
+            (gl.bind_texture)(GL_TEXTURE_2D, 0);
+            self.uploaded_path = self.loaded_path.clone();
+            self.uploaded_mtime = self.mtime;
+        }
+        Some((self.gl_texture, self.w, self.h))
+    }
+
+    /// The already-uploaded texture, if `ensure_texture` succeeded this frame.
+    fn texture(&self) -> Option<(u32, u32, u32)> {
+        (self.gl_texture != 0 && self.pixels.is_some())
+            .then_some((self.gl_texture, self.w, self.h))
     }
 
     fn get(&mut self, path: &str) -> Option<(&[u8], u32, u32)> {
@@ -643,6 +716,12 @@ impl OverlayState {
         // sync window + browser overlay capture sessions with config
         self.win_capture.sync_sessions(&cfg.overlays.window_overlays);
         self.browser_capture.sync_sessions(&cfg.overlays.browser_overlays);
+
+        // Upload the background image to a cached GL texture (no-op when the
+        // image is unchanged) so build_scene can reference it zero-copy.
+        if let BackgroundSpec::Image { ref path, .. } = layout.background {
+            unsafe { self.bg_cache.ensure_texture(&self.local_gl, path); }
+        }
 
         let mut scene = build_scene(
             &layout, vp_w, vp_h,
@@ -1275,30 +1354,81 @@ fn build_scene(
                 }
             }
         }
-        BackgroundSpec::Image { path } => {
-            // HACK: sample center pixel color and fill margins with it
-            // somebody should do proper image stretching here, but this is fine for now
-            if let Some((px, _tw, _th)) = bg_cache.get(path) {
-                let mid = px.len() / 2;
-                let color = if mid + 4 <= px.len() {
-                    [px[mid] as f32 / 255.0, px[mid+1] as f32 / 255.0,
-                     px[mid+2] as f32 / 255.0, px[mid+3] as f32 / 255.0]
-                } else {
-                    [0.0, 0.0, 0.0, 1.0]
+        BackgroundSpec::Image { fit, matte, .. } => {
+            // The background only paints the margins around the game viewport
+            // (the game already occupies the center). We map the whole image to
+            // a screen rect per the fit mode, then render only the parts that
+            // fall in the margins via UV subregions, so it reads as one
+            // wallpaper with the game sitting on top. The texture was uploaded
+            // (and cached) by render_and_composite, so this is zero-copy.
+            if let Some((tex, tw, th)) = bg_cache.texture() {
+                let twf = tw as f32;
+                let thf = th as f32;
+
+                // image_rect: where the full image lands on screen, in px.
+                let (fx, fy, fw, fh) = match fit {
+                    BgFit::Stretch => (0.0, 0.0, sw_f, sh_f),
+                    BgFit::Center => {
+                        ((sw_f - twf) / 2.0, (sh_f - thf) / 2.0, twf, thf)
+                    }
+                    BgFit::Fill | BgFit::Fit => {
+                        let s = if *fit == BgFit::Fill {
+                            (sw_f / twf).max(sh_f / thf)
+                        } else {
+                            (sw_f / twf).min(sh_f / thf)
+                        };
+                        let fw = twf * s;
+                        let fh = thf * s;
+                        ((sw_f - fw) / 2.0, (sh_f - fh) / 2.0, fw, fh)
+                    }
                 };
-                if vx > 0.0 {
-                    elems.push(SceneElement::SolidRect { x: 0.0, y: 0.0, w: vx, h: sh_f, color });
-                }
-                let right = vx + vw;
-                if right < sw_f {
-                    elems.push(SceneElement::SolidRect { x: right, y: 0.0, w: sw_f - right, h: sh_f, color });
-                }
-                if vy > 0.0 {
-                    elems.push(SceneElement::SolidRect { x: vx, y: 0.0, w: vw, h: vy, color });
-                }
-                let bot = vy + vh;
-                if bot < sh_f {
-                    elems.push(SceneElement::SolidRect { x: vx, y: bot, w: vw, h: sh_f - bot, color });
+
+                // Letterboxed modes leave gaps; matte fills them (alpha 0 = skip).
+                let draw_matte = matte[3] > 0.0 && matches!(fit, BgFit::Fit | BgFit::Center);
+
+                // 4 margin strips around the viewport (left/right full height,
+                // top/bottom between them).
+                let strips = [
+                    [0.0,     0.0,     vx,               sh_f],
+                    [vx + vw, 0.0,     sw_f - (vx + vw), sh_f],
+                    [vx,      0.0,     vw,               vy],
+                    [vx,      vy + vh, vw,               sh_f - (vy + vh)],
+                ];
+                for s in strips {
+                    let (sx, sy, ssw, ssh) = (s[0], s[1], s[2], s[3]);
+                    if ssw <= 0.0 || ssh <= 0.0 {
+                        continue;
+                    }
+                    if draw_matte {
+                        elems.push(SceneElement::SolidRect {
+                            x: sx, y: sy, w: ssw, h: ssh, color: *matte,
+                        });
+                    }
+                    // clip the strip to the image rect, map the overlap to UV
+                    let cx0 = sx.max(fx);
+                    let cy0 = sy.max(fy);
+                    let cx1 = (sx + ssw).min(fx + fw);
+                    let cy1 = (sy + ssh).min(fy + fh);
+                    if cx1 > cx0 && cy1 > cy0 {
+                        let uv = [
+                            (cx0 - fx) / fw, (cy0 - fy) / fh,
+                            (cx1 - fx) / fw, (cy1 - fy) / fh,
+                        ];
+                        elems.push(SceneElement::TextureRef {
+                            x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0,
+                            gl_texture: tex, tex_width: tw, tex_height: th,
+                            flip_v: false, circle_clip: false, nearest_filter: false,
+                            filter_target_colors: Vec::new(),
+                            filter_output_color: [0.0; 4],
+                            filter_sensitivity: 0.0,
+                            filter_color_passthrough: false,
+                            filter_border_color: [0.0; 4],
+                            filter_border_width: 0,
+                            filter_gamma_mode: 0,
+                            uv_rect: Some(uv),
+                            custom_shader: None,
+                        });
+                    }
                 }
             }
         }
