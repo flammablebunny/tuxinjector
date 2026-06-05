@@ -786,12 +786,19 @@ unsafe fn render_overlay() {
 
     // fast path: if scene was empty last frame, gui is hidden, AND there
     // are no companion apps registered, skip the entire overlay pipeline.
-    // (companion apps need render_and_composite → app_capture.embed to run
-    // so they get discovered, reparented, and embedded — otherwise they
+    // (companion apps need render_and_composite -> app_capture.embed to run
+    // so they get discovered, reparented, and embedded - otherwise they
     // never appear until the user opens the gui.)
     let gui_vis = tuxinjector_input::gui_is_visible();
     let has_apps = tuxinjector_gui::running_apps::registered_count() > 0;
-    if !SCENE_ACTIVE.load(Ordering::Relaxed) && !gui_vis && !has_apps {
+
+    let needs_centering = {
+        let (mw, mh) = crate::viewport_hook::get_mode_size();
+        let (ow, oh) = crate::viewport_hook::get_original_size();
+        mw > 0 && mh > 0 && ow > 0 && oh > 0 && (mw != ow || mh != oh)
+    };
+
+    if !SCENE_ACTIVE.load(Ordering::Relaxed) && !gui_vis && !has_apps && !needs_centering {
         // still need to process lua commands and poll borderless toggle
         // (these can change state that makes the scene active next frame)
         crate::viewport_hook::poll_borderless_toggle();
