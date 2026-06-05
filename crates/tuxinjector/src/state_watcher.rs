@@ -221,8 +221,9 @@ fn watcher_loop() {
                          Output) is present and being updated in the instance \
                          directory. A stale leftover file from a previous run or a \
                          disabled mod counts as absent. State-conditioned hotkeys \
-                         and state-based features will not work. Install or \
-                         re-enable the Hermes or State Output mod."
+                         will fire regardless of game state (their conditions are \
+                         treated as \"Any\"), and other state-based features won't \
+                         work. Install or re-enable the Hermes or State Output mod."
                     );
                 }
             }

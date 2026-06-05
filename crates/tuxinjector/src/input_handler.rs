@@ -77,6 +77,14 @@ impl TuxinjectorInputHandler {
                 tuxinjector_input::update_key_rebinds(&self.rebinder.active_rebinds());
             }
         }
+
+        // With no live game-state mod, hotkey game-state conditions act as "Any"
+        // so state-conditioned hotkeys still fire instead of never matching.
+        let state_live = matches!(
+            tuxinjector_gui::state_mod_status(),
+            tuxinjector_gui::StateModStatus::Hermes | tuxinjector_gui::StateModStatus::StateOutput
+        );
+        self.hotkeys.set_state_available(state_live);
     }
 
     fn dispatch(&mut self, action: &HotkeyAction) {

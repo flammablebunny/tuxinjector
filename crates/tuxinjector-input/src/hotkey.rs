@@ -48,6 +48,10 @@ pub struct HotkeyEngine {
     // indices of bindings that already fired for current key combo
     fired: HashSet<usize>,
     game_state: String,
+    // Whether a live game-state source (Hermes / State Output) is present. When
+    // false, game-state conditions are treated as "Any" so state-conditioned
+    // hotkeys still fire instead of silently never matching.
+    state_available: bool,
 }
 
 impl HotkeyEngine {
@@ -58,6 +62,7 @@ impl HotkeyEngine {
             last_fire: HashMap::new(),
             fired: HashSet::new(),
             game_state: String::new(),
+            state_available: false,
         }
     }
 
@@ -65,6 +70,12 @@ impl HotkeyEngine {
         if self.game_state != state {
             self.game_state = state.to_string();
         }
+    }
+
+    // Set whether a live game-state source is present. When false, game-state
+    // conditions are ignored (treated as "Any") so hotkeys still fire.
+    pub fn set_state_available(&mut self, available: bool) {
+        self.state_available = available;
     }
 
     // rebuild bindings from config, but keep lua hotkeys across reloads
@@ -285,8 +296,10 @@ impl HotkeyEngine {
     }
 
     fn check_match(&self, bind: &Binding, action: i32) -> bool {
-        // game-state condition
-        if !bind.conditions.game_state.is_empty() {
+        // game-state condition - only enforced when a live state source is
+        // present. With no source (no Hermes / State Output, or a stale one) we
+        // treat the condition as "Any" so state-conditioned hotkeys still fire.
+        if self.state_available && !bind.conditions.game_state.is_empty() {
             let ok = bind
                 .conditions
                 .game_state

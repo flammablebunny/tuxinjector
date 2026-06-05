@@ -38,14 +38,16 @@ pub fn render(
         }
     }
 
-    // No game-state mod -> "Required Game States" conditions can never match.
+    // No live game-state mod -> "Required Game States" conditions are ignored
+    // (treated as "Any"), so every state-conditioned hotkey still fires.
     if crate::state_mod_status() == crate::StateModStatus::Missing {
         crate::widgets::text_wrapped_colored(
             ui,
             [1.0, 0.5, 0.2, 1.0],
-            "No game-state mod detected. Hotkeys with a \"Required Game States\" condition \
-             will never fire (only \"Any\" works). Install the Hermes or State Output mods \
-             so tuxinjector can read the instance state.",
+            "No game-state mod detected. \"Required Game States\" conditions are being \
+             ignored (treated as \"Any\"), so state-conditioned hotkeys fire regardless of \
+             the game state. Install the Hermes or State Output mods so tuxinjector can read \
+             the instance state and enforce these conditions.",
         );
         ui.dummy([0.0, 4.0]);
     }
