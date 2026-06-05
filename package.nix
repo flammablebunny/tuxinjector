@@ -14,6 +14,7 @@
   libxrender,
   libxt,
   libxtst,
+  xorg,
 }:
 let
   version = "1.0.0";
@@ -81,12 +82,14 @@ stdenv.mkDerivation {
     #!/usr/bin/env bash
     export LD_PRELOAD="PLACEHOLDER_LIB"
     export TUXINJECTOR_X11_LIBS="PLACEHOLDER_X11"
+    export TUXINJECTOR_XVFB="PLACEHOLDER_XVFB"
     exec "$@"
     WRAPPER
 
     substituteInPlace $out/bin/tuxinjector-wrapper \
       --replace-warn "PLACEHOLDER_LIB" "$out/lib/libtuxinjector.so" \
-      --replace-warn "PLACEHOLDER_X11" "${lib.makeLibraryPath x11Libs}"
+      --replace-warn "PLACEHOLDER_X11" "${lib.makeLibraryPath x11Libs}" \
+      --replace-warn "PLACEHOLDER_XVFB" "${xorg.xorgserver}/bin/Xvfb"
 
     chmod 755 $out/bin/tuxinjector-wrapper
 
