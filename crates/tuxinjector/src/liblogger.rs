@@ -11,7 +11,7 @@
 //!   1. We pull the `legal-dlls.csv` from the legal-builds repo, find the
 //!      latest `liblogger_<arch>.so` row, and read its expected SHA-512.
 //!   2. We download the matching binary from the Toolscreen release at
-//!      <https://github.com/jojoe77777/Toolscreen/releases/tag/liblogger-signed-latest>.
+//!      <https://github.com/jojoe77777/Toolscreen/releases/tag/liblogger-legal>.
 //!   3. We verify SHA-512 against the CSV. The build refuses to succeed if
 //!      they don't match. **No hashes are hardcoded in this source tree.**
 //!   4. The verified binary is written to `OUT_DIR` and embedded into the
