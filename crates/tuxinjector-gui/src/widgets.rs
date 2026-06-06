@@ -1,6 +1,6 @@
 // Shared widget helpers used across the settings tabs
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
 use imgui::{SliderFlags, StyleColor, Ui};
@@ -8,6 +8,7 @@ use imgui::{SliderFlags, StyleColor, Ui};
 // Tracks which slider is currently in inline text-edit mode (right-click to type).
 thread_local! {
     static EDITING_SLIDER: RefCell<Option<String>> = RefCell::new(None);
+    static FOCUS_PENDING: Cell<bool> = Cell::new(false);
 }
 
 // -- Slider wrappers --
@@ -18,7 +19,9 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
 
     if editing {
         // inline text input - same look as native Ctrl+Click
-        ui.set_keyboard_focus_here();
+        if FOCUS_PENDING.with(|f| f.replace(false)) {
+            ui.set_keyboard_focus_here();
+        }
         let mut changed = imgui::Drag::new(label)
             .range(min, max)
             .speed(1.0)
@@ -49,6 +52,7 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
             EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
+            FOCUS_PENDING.with(|f| f.set(true));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
     }
@@ -61,7 +65,9 @@ pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt
     let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
 
     if editing {
-        ui.set_keyboard_focus_here();
+        if FOCUS_PENDING.with(|f| f.replace(false)) {
+            ui.set_keyboard_focus_here();
+        }
         let mut changed = imgui::Drag::new(label)
             .range(min, max)
             .speed(range * 0.001)
@@ -92,6 +98,7 @@ pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
             EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
+            FOCUS_PENDING.with(|f| f.set(true));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
     }
@@ -106,7 +113,9 @@ pub fn slider_float_log(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32,
     let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
 
     if editing {
-        ui.set_keyboard_focus_here();
+        if FOCUS_PENDING.with(|f| f.replace(false)) {
+            ui.set_keyboard_focus_here();
+        }
         let mut changed = imgui::Drag::new(label)
             .range(min, max)
             .speed(range * 0.001)
@@ -139,6 +148,7 @@ pub fn slider_float_log(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32,
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
             EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
+            FOCUS_PENDING.with(|f| f.set(true));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
     }
