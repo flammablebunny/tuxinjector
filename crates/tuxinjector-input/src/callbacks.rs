@@ -159,6 +159,110 @@ pub unsafe fn press_key_to_game(key: i32) {
     fwd_key(win, key, 0, 0, 0); // RELEASE
 }
 
+// --- self-driven key repeat (per-key) ---
+//
+// Repeat rate can't be a global override on Linux: keys like Escape must keep
+// the OS cadence (a 5 ms repeat would re-open/close the pause menu). So it's
+// opted in per physical key (configured in the rebinds section). For a key in
+// the table we swallow its OS GLFW_REPEAT and re-emit at that key's own start
+// delay + interval, driven once per frame from the swap hook on the game thread.
+
+// physical key -> (start_delay_ms, interval_ms)
+static KR_TABLE: Mutex<Option<std::collections::HashMap<i32, (u32, u32)>>> = Mutex::new(None);
+
+struct KrHeld {
+    logical: i32,
+    scancode: i32,
+    mods: i32,
+    interval: std::time::Duration,
+    next: std::time::Instant,
+}
+static KR_HELD: Mutex<Option<std::collections::HashMap<i32, KrHeld>>> = Mutex::new(None);
+
+/// Set the per-key custom-repeat table: `(physical_key, start_delay_ms, interval_ms)`.
+/// Keys absent from the table keep the game's native OS repeat.
+pub fn set_key_repeat_table(entries: &[(i32, i32, i32)]) {
+    let mut map = std::collections::HashMap::new();
+    for &(key, start, interval) in entries {
+        if interval > 0 {
+            map.insert(key, (start.max(0) as u32, interval.max(1) as u32));
+        }
+    }
+    *KR_TABLE.lock() = if map.is_empty() { None } else { Some(map) };
+    kr_clear(); // drop stale holds; they re-register on next press
+}
+
+fn kr_config_for(physical: i32) -> Option<(u32, u32)> {
+    KR_TABLE.lock().as_ref().and_then(|m| m.get(&physical).copied())
+}
+
+/// True if this physical key has custom repeat (so its OS repeat is swallowed).
+pub fn key_repeat_enabled_for(physical: i32) -> bool {
+    KR_TABLE.lock().as_ref().map_or(false, |m| m.contains_key(&physical))
+}
+
+fn kr_note_press(physical: i32, logical: i32, scancode: i32, mods: i32) {
+    let Some((start, interval)) = kr_config_for(physical) else { return };
+    let next = std::time::Instant::now() + std::time::Duration::from_millis(start as u64);
+    let mut g = KR_HELD.lock();
+    g.get_or_insert_with(std::collections::HashMap::new).insert(
+        physical,
+        KrHeld {
+            logical,
+            scancode,
+            mods,
+            interval: std::time::Duration::from_millis(interval as u64),
+            next,
+        },
+    );
+}
+
+fn kr_note_release(physical: i32) {
+    if let Some(m) = KR_HELD.lock().as_mut() {
+        m.remove(&physical);
+    }
+}
+
+fn kr_clear() {
+    if let Some(m) = KR_HELD.lock().as_mut() {
+        m.clear();
+    }
+}
+
+/// Emit self-driven key repeats. Call once per frame on the game thread.
+pub unsafe fn tick_key_repeat() {
+    if GUI_VISIBLE.load(Ordering::Relaxed) {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let win = GLFW_WINDOW.load(Ordering::Acquire);
+    if win.is_null() {
+        return;
+    }
+
+    // Collect under the lock; emit to the game after releasing it.
+    let mut emit: Vec<(i32, i32, i32)> = Vec::new();
+    {
+        let mut g = KR_HELD.lock();
+        let Some(m) = g.as_mut() else { return };
+        for h in m.values_mut() {
+            let mut n = 0;
+            while now >= h.next && n < 8 {
+                emit.push((h.logical, h.scancode, h.mods));
+                h.next += h.interval;
+                n += 1;
+            }
+            // Resync if we fell badly behind (lag / alt-tab) to avoid a burst.
+            if now > h.next + h.interval * 8 {
+                h.next = now + h.interval;
+            }
+        }
+    }
+    for (logical, scancode, mods) in emit {
+        fwd_key(win, logical, scancode, crate::glfw_types::GLFW_REPEAT, mods);
+    }
+}
+
 // --- mouse position tracking ---
 
 static MOUSE_X: AtomicU64 = AtomicU64::new(0);
@@ -734,7 +838,19 @@ pub unsafe extern "C" fn tuxinjector_key_callback(
             } else {
                 scancode
             };
-            fwd_key_fn(window, fwd_key, fwd_scancode, action, mods);
+            // Per-key custom repeat: track holds (keyed by physical key) and
+            // swallow this key's OS repeats so tick_key_repeat() re-emits at the
+            // key's configured rate. Keys without custom repeat pass through.
+            match action {
+                GLFW_PRESS => kr_note_press(key, fwd_key, fwd_scancode, mods),
+                GLFW_RELEASE => kr_note_release(key),
+                _ => {}
+            }
+            if action == GLFW_REPEAT && key_repeat_enabled_for(key) {
+                // swallowed; tick_key_repeat() drives this key's repeats instead
+            } else {
+                fwd_key_fn(window, fwd_key, fwd_scancode, action, mods);
+            }
         }
 
         // when a non-char key gets rebound to a char key, inject the char event

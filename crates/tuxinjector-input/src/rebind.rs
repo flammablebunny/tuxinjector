@@ -9,6 +9,8 @@ struct RebindEntry {
     from: i32,
     to_game: i32, // 0 = no rebind in game mode (pass key through unchanged)
     to_chat: i32, // 0 = no rebind in chat/text mode (pass key through unchanged)
+    // Per-key custom repeat: Some((start_delay_ms, interval_ms)) when enabled.
+    repeat: Option<(i32, i32)>,
 }
 
 impl RebindEntry {
@@ -41,11 +43,19 @@ impl KeyRebinder {
         self.entries.clear();
 
         for r in &config.rebinds {
-            if r.enabled && r.from_key != 0 && (r.to_key != 0 || r.to_key_chat != 0) {
+            // keep entries that remap, OR that only carry a custom repeat
+            if r.enabled && r.from_key != 0
+                && (r.to_key != 0 || r.to_key_chat != 0 || r.repeat_enabled)
+            {
                 self.entries.push(RebindEntry {
                     from: r.from_key as i32,
                     to_game: r.to_key as i32,
                     to_chat: r.to_key_chat as i32,
+                    repeat: if r.repeat_enabled {
+                        Some((r.repeat_start_delay, r.repeat_delay))
+                    } else {
+                        None
+                    },
                 });
             }
         }
@@ -115,6 +125,18 @@ impl KeyRebinder {
         self.on
     }
 
+    // (from_key, start_delay_ms, interval_ms) for keys with custom repeat enabled.
+    // Empty when rebinds are disabled.
+    pub fn repeat_table(&self) -> Vec<(i32, i32, i32)> {
+        if !self.on {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .filter_map(|e| e.repeat.map(|(s, i)| (e.from, s, i)))
+            .collect()
+    }
+
     // active (from, to) pairs for current state. empty when disabled
     pub fn active_rebinds(&self) -> Vec<(i32, i32)> {
         if self.on {
@@ -141,11 +163,11 @@ mod tests {
     use tuxinjector_config::types::{KeyRebind, KeyRebindsConfig};
 
     fn mk(from: i32, game: i32) -> RebindEntry {
-        RebindEntry { from, to_game: game, to_chat: 0 }
+        RebindEntry { from, to_game: game, to_chat: 0, repeat: None }
     }
 
     fn mk_split(from: i32, game: i32, chat: i32) -> RebindEntry {
-        RebindEntry { from, to_game: game, to_chat: chat }
+        RebindEntry { from, to_game: game, to_chat: chat, repeat: None }
     }
 
     // Pin an explicit game-mode state so tests don't depend on the
@@ -273,12 +295,14 @@ mod tests {
                     to_key: 81,
                     to_key_chat: 0,
                     enabled: true,
+                    ..Default::default()
                 },
                 KeyRebind {
                     from_key: 90,
                     to_key: 91,
                     to_key_chat: 0,
                     enabled: false, // disabled -- skipped
+                    ..Default::default()
                 },
             ],
         };
@@ -315,6 +339,7 @@ mod tests {
                 to_key: 0,
                 to_key_chat: 345,
                 enabled: true,
+                ..Default::default()
             }],
         };
         rb.update_from_config(&config);

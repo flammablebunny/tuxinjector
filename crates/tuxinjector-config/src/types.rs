@@ -1382,6 +1382,14 @@ pub struct KeyRebind {
     pub to_key_chat: u32,
     #[serde(default = "defaults::enabled_true")]
     pub enabled: bool,
+    // Per-key custom repeat: when enabled, tuxinjector swallows this key's native
+    // OS repeat and re-emits it at repeat_start_delay + repeat_delay (ms).
+    #[serde(default)]
+    pub repeat_enabled: bool,
+    #[serde(default = "defaults::key_repeat_start_delay")]
+    pub repeat_start_delay: i32,
+    #[serde(default = "defaults::key_repeat_delay")]
+    pub repeat_delay: i32,
 }
 
 impl Default for KeyRebind {
@@ -1391,6 +1399,9 @@ impl Default for KeyRebind {
             to_key: 0,
             to_key_chat: 0,
             enabled: true,
+            repeat_enabled: false,
+            repeat_start_delay: 200,
+            repeat_delay: 5,
         }
     }
 }
@@ -1425,10 +1436,6 @@ pub struct InputConfig {
     #[serde(default)]
     pub allow_cursor_escape: bool,
     #[serde(default)]
-    pub key_repeat_start_delay: i32,
-    #[serde(default)]
-    pub key_repeat_delay: i32,
-    #[serde(default)]
     pub key_rebinds: KeyRebindsConfig,
     #[serde(default)]
     pub sensitivity_hotkeys: Vec<SensitivityHotkeyConfig>,
@@ -1440,8 +1447,6 @@ impl Default for InputConfig {
             mouse_sensitivity: 1.0,
             windows_mouse_speed: 0,
             allow_cursor_escape: true,
-            key_repeat_start_delay: 0,
-            key_repeat_delay: 0,
             key_rebinds: KeyRebindsConfig::default(),
             sensitivity_hotkeys: Vec::new(),
         }

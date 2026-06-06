@@ -34,6 +34,8 @@ impl TuxinjectorInputHandler {
         let mut sens = SensitivityState::new();
         sens.set_base_sensitivity(cfg.input.mouse_sensitivity);
 
+        tuxinjector_input::set_key_repeat_table(&rebinder.repeat_table());
+
         Self {
             hotkeys,
             rebinder,
@@ -62,6 +64,7 @@ impl TuxinjectorInputHandler {
             self.rebinder.update_from_config(&cfg.input.key_rebinds);
             tuxinjector_input::update_key_rebinds(&self.rebinder.active_rebinds());
             self.sens.set_base_sensitivity(cfg.input.mouse_sensitivity);
+            tuxinjector_input::set_key_repeat_table(&self.rebinder.repeat_table());
 
             // pick up Lua action bindings stashed by the reload path
             if let Some(bindings) = state::get().lua_bindings.lock().unwrap().take() {

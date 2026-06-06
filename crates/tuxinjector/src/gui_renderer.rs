@@ -191,14 +191,8 @@ impl GuiRenderer {
             io.display_framebuffer_scale = [1.0, 1.0];
             io.delta_time = dt.max(0.0001); // imgui panics on zero dt
             io.font_global_scale = gui_scale;
-
-            // key repeat (ms -> s), 0 = imgui default
-            if cfg.input.key_repeat_start_delay > 0 {
-                io.key_repeat_delay = cfg.input.key_repeat_start_delay as f32 / 1000.0;
-            }
-            if cfg.input.key_repeat_delay > 0 {
-                io.key_repeat_rate = cfg.input.key_repeat_delay as f32 / 1000.0;
-            }
+            // (key_repeat_* config now drives the game's key repeat via the input
+            // crate, not imgui's own settings-window repeat - see tick_key_repeat)
 
             for &(glfw_key, pressed, mods) in &input.keys {
                 self.last_mods = mods;

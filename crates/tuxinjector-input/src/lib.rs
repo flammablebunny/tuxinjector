@@ -23,6 +23,7 @@ pub use callbacks::{
     force_cursor_visible, restore_game_cursor,
     set_mode_sensitivity, clear_mode_sensitivity,
     is_key_pressed, press_key_to_game,
+    set_key_repeat_table, tick_key_repeat,
     warp_cursor,
 };
 pub use hotkey::{HotkeyAction, HotkeyEngine};

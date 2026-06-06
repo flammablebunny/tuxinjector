@@ -11,6 +11,9 @@ pub fn color_white() -> Color { Color::WHITE }
 
 pub fn background_selected_mode() -> String { "none".into() }
 pub fn background_image_fit() -> String { "fill".into() }
+
+pub fn key_repeat_start_delay() -> i32 { 200 }
+pub fn key_repeat_delay() -> i32 { 5 }
 pub fn relative_to_top_left() -> String { "topLeftScreen".into() }
 
 pub fn mirror_render_relative_x() -> f32 { 0.5 }

@@ -784,6 +784,10 @@ pub fn set_scene_active(active: bool) {
 unsafe fn render_overlay() {
     if !INITIALIZED.load(Ordering::Acquire) { return; }
 
+    // Drive self-driven key repeat every frame on the game thread (no-op unless
+    // enabled). Runs before the fast-path return so it ticks even with no scene.
+    tuxinjector_input::tick_key_repeat();
+
     // fast path: if scene was empty last frame, gui is hidden, AND there
     // are no companion apps registered, skip the entire overlay pipeline.
     // (companion apps need render_and_composite -> app_capture.embed to run
