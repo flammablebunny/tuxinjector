@@ -120,6 +120,45 @@ pub fn is_key_pressed(key: i32) -> bool {
     })
 }
 
+// --- "block key from game" hotkeys ---
+//
+// A hotkey with `block_key_from_game` set must keep its key from reaching the
+// game while it's actively held. Suppressing the callback event isn't enough:
+// Minecraft reads many binds by polling glfwGetKey, so a consumed key still
+// leaks via the poll. We track the logical keys currently owned by such a
+// hotkey; glfwGetKey reports them released and the key callback drops their
+// press/repeat/release toward the game. Keyed by logical key so it lines up
+// with what both the engine matched on and what the game polls.
+static BLOCKED_FROM_GAME: Mutex<Option<std::collections::HashSet<i32>>> = Mutex::new(None);
+
+pub fn mark_blocked_from_game(key: i32) {
+    BLOCKED_FROM_GAME
+        .lock()
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(key);
+}
+
+/// Remove a key from the blocked set; returns whether it had been blocked.
+pub fn unmark_blocked_from_game(key: i32) -> bool {
+    BLOCKED_FROM_GAME
+        .lock()
+        .as_mut()
+        .map_or(false, |s| s.remove(&key))
+}
+
+pub fn is_blocked_from_game(key: i32) -> bool {
+    BLOCKED_FROM_GAME
+        .lock()
+        .as_ref()
+        .map_or(false, |s| s.contains(&key))
+}
+
+fn clear_blocked_from_game() {
+    if let Some(s) = BLOCKED_FROM_GAME.lock().as_mut() {
+        s.clear();
+    }
+}
+
 // Remembers which logical key each physical key was mapped to at PRESS
 // time. Without this, if the rebinder's decision depends on game state
 // (e.g. chat vs game) and the state changes between PRESS and RELEASE,
@@ -530,6 +569,14 @@ static GUI_SCROLL: Mutex<(f32, f32)> = Mutex::new((0.0, 0.0));
 
 pub fn set_gui_visible(visible: bool) {
     GUI_VISIBLE.store(visible, Ordering::Relaxed);
+    // drop tracked key-repeat holds so they don't resume firing after the GUI
+    // closes (the release may have gone to imgui while the GUI was open)
+    if visible {
+        kr_clear();
+        // and drop any block-from-game holds: their release may go to imgui, so
+        // they'd otherwise stay stuck "released" for the game after the GUI shuts
+        clear_blocked_from_game();
+    }
 }
 
 pub fn gui_is_visible() -> bool {
@@ -829,7 +876,21 @@ pub unsafe extern "C" fn tuxinjector_key_callback(
         track_virtual_key(key, fwd_key, action);
     }
 
-    if !consumed {
+    // A "block key from game" hotkey owns this key for the whole hold: the
+    // engine consumes the PRESS, so also swallow the following REPEATs and the
+    // RELEASE toward the game (and glfwGetKey reports it released). Without this
+    // the key leaks via OS repeat + state polling even though the press fired.
+    let block_from_game = match action {
+        GLFW_PRESS => {
+            if consumed { mark_blocked_from_game(fwd_key); }
+            consumed
+        }
+        GLFW_REPEAT => is_blocked_from_game(fwd_key),
+        GLFW_RELEASE => unmark_blocked_from_game(fwd_key),
+        _ => false,
+    };
+
+    if !consumed && !block_from_game {
         if fwd_key >= MOUSE_BUTTON_OFFSET {
             // key was remapped to a mouse button
             fwd_mouse_btn(window, fwd_key - MOUSE_BUTTON_OFFSET, action, mods);

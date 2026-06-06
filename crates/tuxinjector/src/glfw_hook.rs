@@ -240,6 +240,12 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
         return 0;
     }
 
+    // a "block key from game" hotkey is actively holding this key: keep it
+    // released for polling-based input until the physical key is let go.
+    if callbacks::is_blocked_from_game(key) {
+        return GLFW_RELEASE;
+    }
+
     if callbacks::is_key_pressed(key) {
         return GLFW_PRESS;
     }
