@@ -238,8 +238,7 @@ impl InputHandler for TuxinjectorInputHandler {
             return (true, remapped);
         }
 
-        // normal path: run hotkey engine with the physical key
-        let (consumed, actions) = self.hotkeys.process_key(orig, scancode, action, mods);
+        let (consumed, actions) = self.hotkeys.process_key(remapped, scancode, action, mods);
         for a in &actions { self.dispatch(a); }
 
         (consumed, remapped)

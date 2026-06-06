@@ -244,6 +244,10 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
         return GLFW_PRESS;
     }
 
+    if callbacks::is_rebind_source(key) {
+        return GLFW_RELEASE;
+    }
+
     let ptr = REAL_GET_KEY_PTR.load(Ordering::Acquire);
     if ptr.is_null() {
         tracing::warn!("glfwGetKey: bundled ptr not stored yet, returning 0");
@@ -366,6 +370,11 @@ pub unsafe extern "C" fn glfwGetMouseButton(window: GlfwWindow, button: c_int) -
             return real_key(window, physical);
         }
         return 0;
+    }
+
+    // Remapped-away source button must read released (don't leak its raw state).
+    if callbacks::is_rebind_source(encoded) {
+        return 0; // GLFW_RELEASE
     }
 
     let real: GlfwGetMouseButtonFn = std::mem::transmute(ptr);

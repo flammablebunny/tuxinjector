@@ -338,6 +338,13 @@ fn fwd_remap(key: i32) -> Option<i32> {
         .map(|(_, to)| *to)
 }
 
+/// True if `key` is the *source* of an active rebind (it's been remapped away).
+/// Such a key must read as released when the game polls it directly, otherwise
+/// its raw physical state leaks through alongside the logical key it maps to.
+pub fn is_rebind_source(key: i32) -> bool {
+    fwd_remap(key).is_some()
+}
+
 // ── Codepoint ↔ GLFW Keycode Conversion ─────────────────────────────────
 // The next 2 functions were organised by an LLM
 
