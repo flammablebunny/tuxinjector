@@ -92,7 +92,7 @@ impl TuxinjectorInputHandler {
 
     fn dispatch(&mut self, action: &HotkeyAction) {
         match action {
-            HotkeyAction::SwitchMode { main, secondary } => {
+            HotkeyAction::SwitchMode { main, secondary, .. } => {
                 tracing::debug!(main, secondary, "hotkey: switch mode");
                 let mut target = String::new();
                 if let Some(lock) = state::get().overlay.get() {
@@ -195,6 +195,7 @@ impl TuxinjectorInputHandler {
 impl InputHandler for TuxinjectorInputHandler {
     fn handle_key(&mut self, key: i32, scancode: i32, action: i32, mods: i32) -> (bool, i32) {
         self.maybe_reload();
+        self.hotkeys.set_current_mode(&tuxinjector_lua::get_mode_name());
 
         // forward key press/release to embedded companion apps (XTEST injection)
         if action == 1 || action == 0 {
@@ -248,6 +249,7 @@ impl InputHandler for TuxinjectorInputHandler {
         use tuxinjector_input::glfw_types::MOUSE_BUTTON_OFFSET;
 
         self.maybe_reload();
+        self.hotkeys.set_current_mode(&tuxinjector_lua::get_mode_name());
 
         let encoded = button + MOUSE_BUTTON_OFFSET;
         let mut remapped = self.rebinder.remap_key(encoded, 0);

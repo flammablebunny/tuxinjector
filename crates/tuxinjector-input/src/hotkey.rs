@@ -14,6 +14,9 @@ pub enum HotkeyAction {
     SwitchMode {
         main: String,
         secondary: String,
+        // when true, the game-state condition is ignored if pressing this would
+        // exit a mode it controls (so you can always get back to fullscreen)
+        allow_exit_fullscreen: bool,
     },
     ToggleSensitivity {
         sensitivity: f32,
@@ -48,6 +51,8 @@ pub struct HotkeyEngine {
     // indices of bindings that already fired for current key combo
     fired: HashSet<usize>,
     game_state: String,
+    // Current active mode id, used by SwitchMode's allow_exit_fullscreen bypass.
+    current_mode: String,
     // Whether a live game-state source (Hermes / State Output) is present. When
     // false, game-state conditions are treated as "Any" so state-conditioned
     // hotkeys still fire instead of silently never matching.
@@ -62,6 +67,7 @@ impl HotkeyEngine {
             last_fire: HashMap::new(),
             fired: HashSet::new(),
             game_state: String::new(),
+            current_mode: String::new(),
             state_available: false,
         }
     }
@@ -69,6 +75,13 @@ impl HotkeyEngine {
     pub fn set_game_state(&mut self, state: &str) {
         if self.game_state != state {
             self.game_state = state.to_string();
+        }
+    }
+
+    // Current active mode id (for SwitchMode's allow_exit_fullscreen bypass).
+    pub fn set_current_mode(&mut self, mode: &str) {
+        if self.current_mode != mode {
+            self.current_mode = mode.to_string();
         }
     }
 
@@ -100,6 +113,7 @@ impl HotkeyEngine {
                 action: HotkeyAction::SwitchMode {
                     main: hk.main_mode.clone(),
                     secondary: hk.secondary_mode.clone(),
+                    allow_exit_fullscreen: hk.allow_exit_to_fullscreen_regardless_of_game_state,
                 },
                 on_release: hk.trigger_on_release,
                 block_game: hk.block_key_from_game,
@@ -300,13 +314,30 @@ impl HotkeyEngine {
         // present. With no source (no Hermes / State Output, or a stale one) we
         // treat the condition as "Any" so state-conditioned hotkeys still fire.
         if self.state_available && !bind.conditions.game_state.is_empty() {
-            let ok = bind
-                .conditions
-                .game_state
-                .iter()
-                .any(|s| s == &self.game_state);
-            if !ok {
-                return false;
+            // "Allow exit to fullscreen regardless of game state": only bypass
+            // the condition when this press would LEAVE the resize mode (back
+            // toward fullscreen), never when it would ENTER one - otherwise the
+            // flag would let you re-enter the resize in any state. The resize
+            // mode is `secondary` (or `main` for a simple toggle with no
+            // secondary); the toggle returns you to fullscreen only while you're
+            // already in that resize mode.
+            let exit_bypass = if let HotkeyAction::SwitchMode {
+                main, secondary, allow_exit_fullscreen,
+            } = &bind.action {
+                let resize_mode = if secondary.is_empty() { main } else { secondary };
+                *allow_exit_fullscreen && self.current_mode == *resize_mode
+            } else {
+                false
+            };
+            if !exit_bypass {
+                let ok = bind
+                    .conditions
+                    .game_state
+                    .iter()
+                    .any(|s| s == &self.game_state);
+                if !ok {
+                    return false;
+                }
             }
         }
 
@@ -377,6 +408,7 @@ mod tests {
         HotkeyAction::SwitchMode {
             main: main.into(),
             secondary: sec.into(),
+            allow_exit_fullscreen: false,
         }
     }
 
@@ -673,5 +705,76 @@ mod tests {
         engine.process_key(290, 0, GLFW_RELEASE, 0);
         let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "Alt+F1 must fire on third press too");
+    }
+
+    fn cond(states: &[&str]) -> HotkeyConditions {
+        HotkeyConditions {
+            game_state: states.iter().map(|s| s.to_string()).collect(),
+            exclusions: Vec::new(),
+        }
+    }
+
+    // block_game must consume only when the state-conditioned hotkey actually
+    // fires. When a live state source says we're in a state the hotkey doesn't
+    // allow, the key must pass through to the game (not be swallowed).
+    #[test]
+    fn block_game_consumes_only_when_state_condition_met() {
+        let mut engine = HotkeyEngine::new();
+        engine.bindings.push(Binding {
+            keys: vec![293], // F4
+            action: switch_action("thin", "game"),
+            on_release: false,
+            block_game: true,
+            debounce_ms: 0,
+            conditions: cond(&["world"]),
+        });
+        engine.set_state_available(true);
+
+        // condition NOT met -> must NOT fire and must NOT consume
+        engine.set_game_state("menu");
+        let (consumed, actions) = engine.process_key(293, 0, GLFW_PRESS, 0);
+        assert!(actions.is_empty(), "must not fire when state condition unmet");
+        assert!(!consumed, "must not block key when resize can't trigger");
+        engine.process_key(293, 0, GLFW_RELEASE, 0);
+
+        // condition met -> must fire and consume
+        engine.set_game_state("world");
+        let (consumed, actions) = engine.process_key(293, 0, GLFW_PRESS, 0);
+        assert_eq!(actions.len(), 1, "must fire when state condition met");
+        assert!(consumed, "must block key from game when resize triggers");
+    }
+
+    // "Allow exit to fullscreen regardless of game state" must only bypass the
+    // condition when leaving the resize (Fullscreen <- Thin), never when
+    // entering it (Fullscreen -> Thin). Mirrors the default config where
+    // main = Fullscreen, secondary = the resize mode.
+    #[test]
+    fn allow_exit_bypasses_only_when_leaving_resize() {
+        let mut engine = HotkeyEngine::new();
+        engine.bindings.push(Binding {
+            keys: vec![90], // Z
+            action: HotkeyAction::SwitchMode {
+                main: "Fullscreen".into(),
+                secondary: "Thin".into(),
+                allow_exit_fullscreen: true,
+            },
+            on_release: false,
+            block_game: false,
+            debounce_ms: 0,
+            conditions: cond(&["world"]),
+        });
+        engine.set_state_available(true);
+        engine.set_game_state("menu"); // condition NOT met
+
+        // in Fullscreen, the press would ENTER the resize -> still gated
+        engine.set_current_mode("Fullscreen");
+        let (_, actions) = engine.process_key(90, 0, GLFW_PRESS, 0);
+        assert!(actions.is_empty(), "must not enter resize when state unmet");
+        engine.process_key(90, 0, GLFW_RELEASE, 0);
+
+        // in the resize, the press EXITS to fullscreen -> allowed regardless
+        engine.set_current_mode("Thin");
+        let (_, actions) = engine.process_key(90, 0, GLFW_PRESS, 0);
+        assert_eq!(actions.len(), 1, "must allow exit to fullscreen regardless of state");
     }
 }
