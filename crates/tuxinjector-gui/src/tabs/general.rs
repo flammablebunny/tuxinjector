@@ -9,6 +9,8 @@ pub struct GeneralState {
     fonts: Option<Vec<(String, String)>>,
     confirm_delete: bool,
     rename_buf: String,
+    // reveals the per-app checkboxes for the "Launch Companion Apps" hotkey
+    show_launch_apps_config: bool,
 }
 
 impl GeneralState {
@@ -237,25 +239,6 @@ pub fn render(
         *dirty = true;
     }
 
-    // -- Key repeat --
-    ui.dummy([0.0, 12.0]);
-    ui.separator(); ui.text("Key Repeat");
-    ui.dummy([0.0, 4.0]);
-
-    ui.text("Start Delay (ms):");
-    ui.same_line();
-    ui.set_next_item_width(120.0);
-    if crate::widgets::slider_int(ui, "##repeat_start", &mut config.input.key_repeat_start_delay, 0, 2000, "%d ms") {
-        *dirty = true;
-    }
-
-    ui.text("Repeat Delay (ms):");
-    ui.same_line();
-    ui.set_next_item_width(120.0);
-    if crate::widgets::slider_int(ui, "##repeat_delay", &mut config.input.key_repeat_delay, 0, 500, "%d ms") {
-        *dirty = true;
-    }
-
     // -- Hook chaining --
     ui.dummy([0.0, 12.0]);
     ui.separator(); ui.text("Hook Chaining");
@@ -311,6 +294,25 @@ pub fn render(
     hotkey_row(ui, "Toggle Image Overlays:", &mut config.hotkeys.image_overlays, "img_hk", dirty, state, captured_key);
     hotkey_row(ui, "Toggle Window Overlays:", &mut config.hotkeys.window_overlays, "wo_hk", dirty, state, captured_key);
     hotkey_row(ui, "Toggle App Visibility:", &mut config.hotkeys.app_visibility, "appvis_hk", dirty, state, captured_key);
+
+    hotkey_row(ui, "Launch Companion Apps:", &mut config.hotkeys.launch_apps, "launch_apps_hk", dirty, state, captured_key);
+    ui.same_line();
+    if ui.small_button("Configure##launch_cfg") {
+        state.show_launch_apps_config = !state.show_launch_apps_config;
+    }
+    // which apps that hotkey launches -- revealed by Configure, same line.
+    if state.show_launch_apps_config {
+        let fp = ui.clone_style().frame_padding;
+        let _pad = ui.push_style_var(imgui::StyleVar::FramePadding([fp[0], 0.0]));
+        ui.same_line();
+        if ui.checkbox("NinjaBrainBot##launch_nbb", &mut config.hotkeys.launch_nbb) {
+            *dirty = true;
+        }
+        ui.same_line();
+        if ui.checkbox("Paceman##launch_paceman", &mut config.hotkeys.launch_paceman) {
+            *dirty = true;
+        }
+    }
 }
 
 fn hotkey_row(

@@ -29,6 +29,11 @@ pub enum HotkeyAction {
     ToggleWindowOverlays,
     ToggleBorderless,
     ToggleAppVisibility,
+    // launch the selected companion apps (NinjaBrainBot / Paceman)
+    LaunchApps {
+        nbb: bool,
+        paceman: bool,
+    },
     Custom(String),
     // lua callback by registry ID
     LuaCallback(u64),
@@ -201,6 +206,26 @@ impl HotkeyEngine {
                 on_release: false,
                 block_game: true,
                 debounce_ms: TOGGLE_DEBOUNCE,
+                conditions: HotkeyConditions::default(),
+            });
+        }
+
+        if !config.hotkeys.launch_apps.is_empty() {
+            let keys: Vec<i32> = config
+                .hotkeys.launch_apps
+                .iter()
+                .map(|&k| k as i32)
+                .collect();
+            self.bindings.push(Binding {
+                keys,
+                action: HotkeyAction::LaunchApps {
+                    nbb: config.hotkeys.launch_nbb,
+                    paceman: config.hotkeys.launch_paceman,
+                },
+                on_release: false,
+                block_game: true,
+                // launching is heavy; guard against rapid re-fire on key chatter
+                debounce_ms: 1000,
                 conditions: HotkeyConditions::default(),
             });
         }

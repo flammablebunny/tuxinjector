@@ -177,6 +177,10 @@ impl TuxinjectorInputHandler {
                     }
                 }
             }
+            HotkeyAction::LaunchApps { nbb, paceman } => {
+                tracing::debug!(nbb, paceman, "hotkey: launch companion apps");
+                tuxinjector_gui::tabs::apps::request_launch(*nbb, *paceman);
+            }
             HotkeyAction::Custom(name) => {
                 tracing::debug!(name, "hotkey: custom action");
             }

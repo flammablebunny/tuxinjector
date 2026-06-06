@@ -1741,6 +1741,13 @@ pub struct GlobalHotkeysConfig {
     pub window_overlays: Vec<u32>,
     #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
     pub app_visibility: Vec<u32>,
+    #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
+    pub launch_apps: Vec<u32>,
+    // which companion apps the "Launch Companion Apps" hotkey starts
+    #[serde(default = "defaults::bool_true")]
+    pub launch_nbb: bool,
+    #[serde(default = "defaults::bool_true")]
+    pub launch_paceman: bool,
     #[serde(default)]
     pub mode_hotkeys: Vec<HotkeyConfig>,
 }
@@ -1753,6 +1760,9 @@ impl Default for GlobalHotkeysConfig {
             image_overlays: Vec::new(),
             window_overlays: Vec::new(),
             app_visibility: Vec::new(),
+            launch_apps: Vec::new(),
+            launch_nbb: true,
+            launch_paceman: true,
             mode_hotkeys: vec![
                 // Z: Fullscreen <-> Thin
                 HotkeyConfig {

@@ -426,6 +426,87 @@ fn do_launch(
     }
 }
 
+// --- "Launch Companion Apps" hotkey support -------------------------------
+//
+// A global hotkey can launch companion apps with the GUI closed, but the Apps
+// tab's render() only runs when that tab is visible. So launch requests are
+// queued here and drained on the game thread each frame by
+// poll_launch_requests(). Children launched this way are reaped here too (the
+// Apps tab only reaps the ones it launched itself).
+
+static LAUNCH_QUEUE: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+static HOTKEY_PROCS: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
+
+/// Queue companion-app launches from the "Launch Companion Apps" hotkey.
+/// Drained on the game thread by [`poll_launch_requests`].
+pub fn request_launch(nbb: bool, paceman: bool) {
+    if let Ok(mut q) = LAUNCH_QUEUE.lock() {
+        if nbb && !q.contains(&"ninjabrainbot") { q.push("ninjabrainbot"); }
+        if paceman && !q.contains(&"paceman") { q.push("paceman"); }
+    }
+}
+
+/// Drain queued launch requests and reap finished hotkey-launched children.
+/// Call once per frame on the game thread — works with the GUI closed.
+pub fn poll_launch_requests() {
+    // reap finished hotkey-launched children so they don't linger as zombies
+    if let Ok(mut procs) = HOTKEY_PROCS.lock() {
+        procs.retain_mut(|child| match child.try_wait() {
+            Ok(Some(_)) => {
+                super::super::running_apps::unregister(child.id());
+                false
+            }
+            _ => true,
+        });
+    }
+
+    let reqs: Vec<&'static str> = match LAUNCH_QUEUE.lock() {
+        Ok(mut q) if !q.is_empty() => std::mem::take(&mut *q),
+        _ => return,
+    };
+    for id in reqs {
+        launch_by_id(id);
+    }
+}
+
+fn launch_by_id(id: &str) {
+    let Some(app) = APPS.iter().find(|a| a.id == id) else { return };
+
+    // don't double-launch: an instance may already be up from the Apps tab,
+    // autostart, or a prior hotkey press
+    if super::super::running_apps::list().iter().any(|a| a.name == app.name) {
+        super::super::toast::push(format!("{} already running", app.name));
+        return;
+    }
+
+    let jar = match probe_installed(id) {
+        InstallStatus::Installed { jar_path, .. } => jar_path,
+        _ => {
+            super::super::toast::push_colored(
+                format!("{} not installed", app.name),
+                [220, 80, 80, 255],
+            );
+            return;
+        }
+    };
+
+    let anchor = load_autostart(id).unwrap_or(Anchor::TopRight);
+    let (extra, mode): (&[&str], LaunchMode) = match &app.launch {
+        LaunchStyle::Anchored => (&[], LaunchMode::Anchored(anchor)),
+        LaunchStyle::Headless { nogui_flag } => {
+            (&[nogui_flag.as_ref()], LaunchMode::Anchored(anchor))
+        }
+    };
+
+    let mut slot = None;
+    do_launch(&jar, app.name, extra, mode, &mut slot);
+    if let Some(child) = slot {
+        if let Ok(mut procs) = HOTKEY_PROCS.lock() {
+            procs.push(child);
+        }
+    }
+}
+
 pub fn render(ui: &imgui::Ui, state: &mut AppsState) {
     // drain download results
     while let Ok(res) = state.dl_rx.try_recv() {

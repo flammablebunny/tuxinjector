@@ -979,7 +979,7 @@ impl AppCaptureManager {
                         // crash in SCKit's XPC cleanup when perms are granted
                         // mid-session. user must grant in System Settings manually.
                         // thanks to slackow for finding this bug
-                        tracing::warn!("screen recording permission not granted — \
+                        tracing::warn!("screen recording permission not granted - \
                             grant in System Settings > Privacy & Security > Screen Recording");
                     }
                 } else {

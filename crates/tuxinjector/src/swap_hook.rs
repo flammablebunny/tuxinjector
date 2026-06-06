@@ -331,6 +331,8 @@ static GRACEFUL_CHILD_SHUTDOWN: extern "C" fn() = graceful_child_shutdown;
 // dispatch pending commands from the Lua runtime (called each frame)
 fn process_lua_commands() {
     reap_children();
+    // drain "Launch Companion Apps" hotkey requests (runs even with no Lua/scene)
+    tuxinjector_gui::tabs::apps::poll_launch_requests();
     let tx = state::get();
     let runtime = match tx.lua_runtime.get() {
         Some(r) => r,
