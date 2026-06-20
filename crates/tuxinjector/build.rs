@@ -59,6 +59,20 @@ fn main() {
         .as_deref()
         .and_then(|csv| find_latest_hash(csv, filename));
 
+    // Manual pin: embed a local binary instead of downloading. Still verified
+    // against legal-dlls.csv, so the pinned file must be a legal build. Use this
+    // when the rolling `liblogger-legal` release lags the CSV (e.g. the CSV
+    // legalized 1.0.2 but the release still serves the 1.0.1 binary).
+    println!("cargo:rerun-if-env-changed=TUXINJECTOR_LIBLOGGER_PATH");
+    if let Ok(path) = env::var("TUXINJECTOR_LIBLOGGER_PATH") {
+        let bytes = fs::read(&path)
+            .unwrap_or_else(|e| panic!("read TUXINJECTOR_LIBLOGGER_PATH ({path}): {e}"));
+        verify_or_panic(filename, &expected_hash, &bytes);
+        fs::write(&out_path, &bytes).expect("write pinned liblogger to OUT_DIR");
+        println!("cargo:warning=tuxinjector: pinned liblogger from {path}");
+        return;
+    }
+
     // 2. Download the matching binary from the Toolscreen release.
     let url = format!("{TOOLSCREEN_RELEASE_BASE}/{filename}");
     let bytes = match download(&url) {
@@ -75,12 +89,22 @@ fn main() {
     };
 
     // 3. Verify against the CSV hash if we have one.
+    verify_or_panic(filename, &expected_hash, &bytes);
+
+    // 4. Write the binary to OUT_DIR so liblogger.rs can include_bytes! it.
+    fs::write(&out_path, &bytes).expect("write liblogger to OUT_DIR");
+}
+
+/// Verify a liblogger binary's SHA-512 against the expected (latest) hash from
+/// legal-dlls.csv. Panics on mismatch. Warns (but allows) if the CSV had no
+/// entry for this filename — such a build is not legal.
+fn verify_or_panic(filename: &str, expected_hash: &Option<String>, bytes: &[u8]) {
     match expected_hash {
         Some(expected) => {
-            let actual = sha512_hex(&bytes);
-            if actual != expected {
+            let actual = sha512_hex(bytes);
+            if &actual != expected {
                 panic!(
-                    "downloaded {filename} SHA-512 does not match legal-dlls.csv\n\
+                    "{filename} SHA-512 does not match legal-dlls.csv\n\
                      expected: {expected}\n\
                      actual:   {actual}\n\
                      either the Toolscreen release or legal-dlls.csv was just updated;\n\
@@ -96,9 +120,6 @@ fn main() {
             );
         }
     }
-
-    // 4. Write the binary to OUT_DIR so liblogger.rs can include_bytes! it.
-    fs::write(&out_path, &bytes).expect("write liblogger to OUT_DIR");
 }
 
 fn out_dir() -> PathBuf {
