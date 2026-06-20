@@ -325,9 +325,9 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
 
         b"glfwSetWindowTitle" => hook!(crate::window_state::store_real_set_window_title, crate::window_state::hooked_glfw_set_window_title),
 
-        // Stash real ptrs so we can programmatically center the cursor on
-        // menu open (ICM prevention). We don't override these -- just
-        // return the real function to the caller.
+        // Stash the real ptr so we can programmatically center the cursor on
+        // menu open (ICM prevention). We don't override this -- just return the
+        // real function to the caller.
         b"glfwSetCursorPos" => {
             let p = real_dlsym()(handle, symbol);
             if !p.is_null() {

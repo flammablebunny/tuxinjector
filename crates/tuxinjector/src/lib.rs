@@ -31,6 +31,8 @@ mod text_rasterizer;
 #[allow(dead_code)]
 mod virtual_fb;
 mod viewport_hook;
+#[cfg(target_os = "linux")]
+mod wayland_hook;
 mod window_state;
 
 // liblogger loader: see crates/tuxinjector/src/liblogger.rs for details.

@@ -553,7 +553,32 @@ pub unsafe fn restore_game_cursor() {
     // re-flag and signal recapture so sensitivity resets
     CURSOR_CAPTURED.store(true, Ordering::Relaxed);
     CURSOR_RECAPTURED.store(true, Ordering::Relaxed);
-    debug!("restore_game_cursor: cursor set back to DISABLED");
+    RECENTER_AFTER_GUI.store(true, Ordering::Relaxed);
+    debug!("restore_game_cursor: cursor set back to DISABLED; armed GUI-ICM recenter");
+}
+
+// Set when the tux GUI hands the cursor back to the game; consumed on the next
+// menu open to recenter once (GUI-ICM prevention).
+static RECENTER_AFTER_GUI: AtomicBool = AtomicBool::new(false);
+
+pub fn glfw_window_handle() -> crate::glfw_types::GlfwWindow {
+    GLFW_WINDOW.load(Ordering::Acquire)
+}
+
+/// Current logical (screen-coordinate) window size via the real glfwGetWindowSize.
+/// On Wayland this is the surface-local size, i.e. the space the locked-pointer
+/// cursor-position hint lives in. Returns None until the real fn / window are known.
+pub fn window_logical_size() -> Option<(i32, i32)> {
+    let win = glfw_window_handle();
+    let ptr = REAL_GET_WINDOW_SIZE.load(Ordering::Acquire);
+    if win.is_null() || ptr.is_null() {
+        return None;
+    }
+    type GetWinSizeFn = unsafe extern "C" fn(GlfwWindow, *mut i32, *mut i32);
+    let f: GetWinSizeFn = unsafe { std::mem::transmute(ptr) };
+    let (mut w, mut h) = (0i32, 0i32);
+    unsafe { f(win, &mut w, &mut h) };
+    if w > 0 && h > 0 { Some((w, h)) } else { None }
 }
 
 // --- GUI input state ---
@@ -1168,7 +1193,7 @@ pub unsafe fn intercept_set_input_mode(window: GlfwWindow, mode: i32, value: i32
         }
 
         if was && !captured {
-            should_center_after = true;
+            should_center_after = RECENTER_AFTER_GUI.swap(false, Ordering::Relaxed);
         }
     }
 
@@ -1180,10 +1205,7 @@ pub unsafe fn intercept_set_input_mode(window: GlfwWindow, mode: i32, value: i32
         real_fn(window, mode, value);
     }
 
-    // NOTE: Make sure to run the cursor reset AFTER the mode transition has taken effect, so
-    // GLFW's internal "last known cursor position" for the now-NORMAL cursor
-    // is the window center and MC's hit-test receives a centered coord on
-    // the next glfwGetCursorPos poll.
+    // Recenter only when armed by restore_game_cursor (GUI-ICM prevention).
     if should_center_after {
         center_cursor(window);
     }
