@@ -1,7 +1,7 @@
 // Tracks companion apps launched from the Apps tab.
 // Just a Vec behind a mutex. Keeps it simple.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,6 +107,44 @@ pub fn unregister(pid: u32) {
         REGISTERED_COUNT.store(list.len(), Ordering::Relaxed);
     }
     unregister_stdin(pid);
+    if let Ok(mut h) = hidden_set().lock() {
+        h.remove(&pid);
+    }
+}
+
+// --- per-app launch-hidden visibility ---
+//
+// Apps launched with "Launch Hidden" start composited-but-invisible: they run
+// normally on the private Xvfb, but the embed loop skips rendering their pid
+// until they're revealed (the app-visibility toggle clears this set).
+
+fn hidden_set() -> &'static Mutex<HashSet<u32>> {
+    static H: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Mark a pid as launched-hidden (skipped by the overlay embed loop).
+pub fn mark_hidden(pid: u32) {
+    if let Ok(mut h) = hidden_set().lock() {
+        h.insert(pid);
+    }
+}
+
+/// Whether this pid is currently launch-hidden.
+pub fn is_hidden(pid: u32) -> bool {
+    hidden_set().lock().map(|h| h.contains(&pid)).unwrap_or(false)
+}
+
+/// Whether any app is currently launch-hidden.
+pub fn any_hidden() -> bool {
+    hidden_set().lock().map(|h| !h.is_empty()).unwrap_or(false)
+}
+
+/// Reveal all launch-hidden apps (used by the app-visibility toggle).
+pub fn clear_hidden() {
+    if let Ok(mut h) = hidden_set().lock() {
+        h.clear();
+    }
 }
 
 /// SIGTERM a registered app by pid and unregister it. Use this to stop an app

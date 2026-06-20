@@ -68,6 +68,7 @@ pub struct AppsState {
     procs: Vec<Option<std::process::Child>>,
     anchors: Vec<Anchor>,
     autostart: Vec<bool>,
+    launch_hidden: Vec<bool>,
     autostart_done: bool,
     dl_tx: mpsc::SyncSender<DlResult>,
     dl_rx: mpsc::Receiver<DlResult>,
@@ -82,6 +83,7 @@ impl Default for AppsState {
             procs: (0..n).map(|_| None).collect(),
             anchors: vec![Anchor::TopRight; n],
             autostart: vec![false; n],
+            launch_hidden: vec![false; n],
             autostart_done: false,
             dl_tx: tx,
             dl_rx: rx,
@@ -94,6 +96,7 @@ impl Default for AppsState {
                 s.autostart[i] = true;
                 s.anchors[i] = anchor;
             }
+            s.launch_hidden[i] = load_launch_hidden(app.id);
         }
 
         // auto-launch anything marked for startup
@@ -107,7 +110,7 @@ impl Default for AppsState {
                         (&[nogui_flag.as_ref()], LaunchMode::Anchored(s.anchors[i]))
                     }
                 };
-                do_launch(&jar, app.name, extra, mode, &mut s.procs[i]);
+                do_launch(&jar, app.name, extra, mode, s.launch_hidden[i], &mut s.procs[i]);
             }
         }
         s.autostart_done = true;
@@ -127,7 +130,45 @@ fn apps_dir() -> PathBuf {
 
 fn app_jar_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.jar")) }
 fn app_ver_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.version")) }
-fn autostart_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.autostart")) }
+
+/// Active config profile name (empty = default). Resolved the same way the rest
+/// of the app does: a `--profile`/`TUXINJECTOR_PROFILE` launch override wins,
+/// else the shared `active_profile.txt`. Autostart is scoped to this so it
+/// respects the active profile instead of firing for every profile.
+fn active_profile() -> String {
+    if let Some(p) = tuxinjector_config::profile_override() {
+        return p;
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".config")
+        });
+    std::fs::read_to_string(base.join("tuxinjector").join("active_profile.txt"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Per-profile, per-app state marker path. The default profile keeps the
+/// original flat path (`apps/{id}.{ext}`) for backward compatibility; named
+/// profiles get their own `apps/profiles/{profile}/{id}.{ext}`.
+fn marker_path(id: &str, ext: &str) -> PathBuf {
+    let profile = active_profile();
+    if profile.is_empty() {
+        apps_dir().join(format!("{id}.{ext}"))
+    } else {
+        apps_dir().join("profiles").join(profile).join(format!("{id}.{ext}"))
+    }
+}
+
+fn write_marker(path: &Path, contents: &[u8]) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, contents);
+}
+
+fn autostart_path(id: &str) -> PathBuf { marker_path(id, "autostart") }
 
 fn load_autostart(id: &str) -> Option<Anchor> {
     let content = std::fs::read_to_string(autostart_path(id)).ok()?;
@@ -135,12 +176,24 @@ fn load_autostart(id: &str) -> Option<Anchor> {
 }
 
 fn save_autostart(id: &str, anchor: Anchor) {
-    let _ = std::fs::create_dir_all(apps_dir());
-    let _ = std::fs::write(autostart_path(id), anchor.label());
+    write_marker(&autostart_path(id), anchor.label().as_bytes());
 }
 
 fn clear_autostart(id: &str) {
     let _ = std::fs::remove_file(autostart_path(id));
+}
+
+// "Launch Hidden" preference -- presence of the marker means enabled.
+fn launchhidden_path(id: &str) -> PathBuf { marker_path(id, "launchhidden") }
+
+fn load_launch_hidden(id: &str) -> bool { launchhidden_path(id).exists() }
+
+fn save_launch_hidden(id: &str) {
+    write_marker(&launchhidden_path(id), b"1");
+}
+
+fn clear_launch_hidden(id: &str) {
+    let _ = std::fs::remove_file(launchhidden_path(id));
 }
 
 fn parse_anchor(s: &str) -> Option<Anchor> {
@@ -403,6 +456,7 @@ fn do_launch(
     name: &str,
     extra_args: &[&str],
     mode: LaunchMode,
+    hidden: bool,
     slot: &mut Option<std::process::Child>,
 ) {
     let detached = matches!(mode, LaunchMode::Detached);
@@ -413,6 +467,11 @@ fn do_launch(
                 super::super::running_apps::register_stdin(pid, stdin);
             }
             super::super::running_apps::register(pid, name, mode);
+            // Anchored apps can start composited-but-invisible ("Launch Hidden").
+            // Detached apps are standalone windows, so hidden doesn't apply.
+            if hidden && matches!(mode, LaunchMode::Anchored(_)) {
+                super::super::running_apps::mark_hidden(pid);
+            }
             let info = match mode {
                 LaunchMode::Anchored(a) => format!("launched (anchored {})", a.label()),
                 LaunchMode::Detached => "launched (detached)".to_string(),
@@ -517,7 +576,7 @@ fn launch_by_id(id: &str) {
     };
 
     let mut slot = None;
-    do_launch(&jar, app.name, extra, mode, &mut slot);
+    do_launch(&jar, app.name, extra, mode, load_launch_hidden(id), &mut slot);
     if let Some(child) = slot {
         if let Ok(mut procs) = HOTKEY_PROCS.lock() {
             procs.push(child);
@@ -685,15 +744,33 @@ fn launch_buttons(
         ui.tooltip_text("Launch app automatically on game start");
     }
 
+    // launch-hidden toggle
+    ui.same_line();
+    let mut hidden = state.launch_hidden[idx];
+    if ui.checkbox(format!("Launch Hidden##hidden_{}", app.id), &mut hidden) {
+        state.launch_hidden[idx] = hidden;
+        if hidden {
+            save_launch_hidden(app.id);
+        } else {
+            clear_launch_hidden(app.id);
+        }
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Start the app composited but invisible. Reveal it with the \
+             Toggle App Visibility hotkey (General -> Global Hotkeys).",
+        );
+    }
+
     match &app.launch {
         LaunchStyle::Anchored => {
             if ui.button(format!("Launch##launch_{}", app.id)) {
                 let a = state.anchors[idx];
-                do_launch(jar, app.name, &[], LaunchMode::Anchored(a), &mut state.procs[idx]);
+                do_launch(jar, app.name, &[], LaunchMode::Anchored(a), state.launch_hidden[idx], &mut state.procs[idx]);
             }
             ui.same_line();
             if ui.button(format!("Launch Detached##detach_{}", app.id)) {
-                do_launch(jar, app.name, &[], LaunchMode::Detached, &mut state.procs[idx]);
+                do_launch(jar, app.name, &[], LaunchMode::Detached, false, &mut state.procs[idx]);
             }
             if ui.is_item_hovered() {
                 ui.tooltip_text(
@@ -728,12 +805,13 @@ fn launch_buttons(
                 do_launch(
                     jar, app.name, &[nogui_flag],
                     LaunchMode::Anchored(Anchor::TopLeft),
+                    state.launch_hidden[idx],
                     &mut state.procs[idx],
                 );
             }
             ui.same_line();
             if ui.button(format!("Launch with GUI##gui_{}", app.id)) {
-                do_launch(jar, app.name, &[], LaunchMode::Detached, &mut state.procs[idx]);
+                do_launch(jar, app.name, &[], LaunchMode::Detached, false, &mut state.procs[idx]);
             }
         }
     }

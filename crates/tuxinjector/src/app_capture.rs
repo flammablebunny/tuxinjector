@@ -138,9 +138,13 @@ impl AppCaptureManager {
         self.embedded.keys().copied().collect()
     }
 
-    pub fn toggle_visibility(&mut self) {
-        self.visible = !self.visible;
-        tracing::debug!(visible = self.visible, "toggled anchored app visibility");
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+        tracing::debug!(visible, "set anchored app visibility");
     }
 
     /// Inject queued key press/release events into tux's private Xvfb via XTEST.

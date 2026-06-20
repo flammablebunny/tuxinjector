@@ -756,6 +756,11 @@ impl OverlayState {
                     LaunchMode::Anchored(anchor) => {
                         if !self.windows_visible { continue; }
                         if let Some(cap) = self.app_capture.embed(app.pid, vp_w, vp_h, anchor) {
+                            // Launched-hidden apps are still embedded every frame (window
+                            // discovered, reparented offscreen, capture thread kept warm) and
+                            // only skip compositing -- so revealing them via the visibility
+                            // toggle is instant instead of paying ~2s of first-time setup.
+                            if tuxinjector_gui::running_apps::is_hidden(app.pid) { continue; }
                             scene.elements.push(SceneElement::Textured {
                                 x: cap.anchor_x, y: cap.anchor_y,
                                 w: cap.width as f32, h: cap.height as f32,
@@ -1218,7 +1223,15 @@ impl OverlayState {
     }
 
     pub fn toggle_app_visibility(&mut self) {
-        self.app_capture.toggle_visibility();
+        // "Reveal if anything is hidden, else hide all." This way a single press
+        // reveals apps launched hidden, and with no hidden apps it behaves like a
+        // plain global show/hide flip.
+        let anything_hidden =
+            !self.app_capture.is_visible() || tuxinjector_gui::running_apps::any_hidden();
+        self.app_capture.set_visible(anything_hidden);
+        if anything_hidden {
+            tuxinjector_gui::running_apps::clear_hidden();
+        }
     }
 
     fn load_custom_shaders(&mut self, cfg: &tuxinjector_config::Config) {
