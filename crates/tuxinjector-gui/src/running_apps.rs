@@ -109,6 +109,18 @@ pub fn unregister(pid: u32) {
     unregister_stdin(pid);
 }
 
+/// SIGTERM a registered app by pid and unregister it. Use this to stop an app
+/// whose `Child` handle this caller doesn't own (e.g. one launched by the
+/// "Launch Companion Apps" hotkey or by Lua `exec`) -- the handle's owner reaps
+/// the now-dead child on its next poll.
+pub fn stop_pid(pid: u32) {
+    #[cfg(unix)]
+    if pid > 0 {
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+    }
+    unregister(pid);
+}
+
 pub fn list() -> Vec<RunningApp> {
     registry().lock().map(|g| g.clone()).unwrap_or_default()
 }

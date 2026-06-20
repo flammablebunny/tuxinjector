@@ -426,6 +426,24 @@ fn do_launch(
     }
 }
 
+/// Stop a running companion app regardless of how it was launched. If this tab
+/// owns the `Child` (launched via its own buttons) we kill it directly;
+/// otherwise it came up via the hotkey / Lua exec / autostart, so we signal it
+/// by pid through the registry and let its owning reaper clean up the handle.
+fn stop_app(name: &str, slot: &mut Option<std::process::Child>) {
+    if let Some(child) = slot {
+        super::super::running_apps::unregister(child.id());
+        let _ = child.kill();
+        *slot = None;
+        return;
+    }
+    for app in super::super::running_apps::list() {
+        if app.name == name {
+            super::super::running_apps::stop_pid(app.pid);
+        }
+    }
+}
+
 // --- "Launch Companion Apps" hotkey support -------------------------------
 //
 // A global hotkey can launch companion apps with the GUI closed, but the Apps
@@ -547,8 +565,13 @@ pub fn render(ui: &imgui::Ui, state: &mut AppsState) {
     ui.separator();
     ui.dummy([0.0, 4.0]);
 
+    // Source of truth for "is this app running" is the registry, not our own
+    // state.procs -- an app can also be up from the "Launch Companion Apps"
+    // hotkey or Lua exec/autostart, whose Child handles live elsewhere.
+    let running_now = super::super::running_apps::list();
+
     for (i, app) in APPS.iter().enumerate() {
-        let running = state.procs[i].is_some();
+        let running = running_now.iter().any(|a| a.name == app.name);
 
         ui.group(|| {
             ui.text(app.name);
@@ -587,11 +610,7 @@ pub fn render(ui: &imgui::Ui, state: &mut AppsState) {
                         );
                         ui.same_line();
                         if ui.button(format!("Stop##app_{i}")) {
-                            if let Some(child) = &mut state.procs[i] {
-                                super::super::running_apps::unregister(child.id());
-                                let _ = child.kill();
-                            }
-                            state.procs[i] = None;
+                            stop_app(app.name, &mut state.procs[i]);
                             super::super::toast::push(format!("{} stopped", app.name));
                         }
                     } else {
