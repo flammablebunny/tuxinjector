@@ -832,6 +832,18 @@ unsafe fn render_overlay() {
 
                 let (mw, mh) = crate::viewport_hook::get_mode_size();
 
+                // Snapshot the game's real viewport before our present mutates it.
+                // tux changes glViewport directly (bypassing MC's GlStateManager) in
+                // center_game_content and the present tail below. Sodium caches the
+                // GlStateManager viewport and SKIPS "redundant" glViewport calls, so
+                // leaving a window-sized viewport here makes Sodium skip the game's
+                // next (mode-sized) viewport set -> the game renders through our stale
+                // viewport -> broken resize. We restore this at the end so the real GL
+                // viewport stays equal to Sodium's cache. (Harmless no-op without a
+                // resize mode, where saved == restored == window size.)
+                let mut saved_vp = [0i32; 4];
+                (gl.get_integer_v)(0x0BA2 /* GL_VIEWPORT */, saved_vp.as_mut_ptr());
+
                 if mw > 0 && mh > 0 && (mw != w || mh != h) {
                     let oversized = crate::viewport_hook::is_oversized(mw, mh, w, h);
                     if oversized || !crate::viewport_hook::is_gl_viewport_hooked() {
@@ -889,6 +901,13 @@ unsafe fn render_overlay() {
                 // stale; MC re-binds any PBO it needs before its own uploads.
                 (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
                 (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, 0);
+
+                // Restore the game's viewport (snapshotted above) so the real GL
+                // state matches MC/Sodium's cached viewport. Must be the last GL
+                // call here -- the overlay legitimately rendered at window size via
+                // the (gl.viewport)(0,0,w,h) above, and this only takes effect for
+                // the game's next frame.
+                (gl.viewport)(saved_vp[0], saved_vp[1], saved_vp[2], saved_vp[3]);
             } else if let Err(e) = overlay.render_and_composite(w, h) {
                 tracing::error!("overlay render failed: {e}");
             }
