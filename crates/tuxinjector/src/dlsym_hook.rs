@@ -120,11 +120,24 @@ pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut
         std::mem::transmute(ptr)
     });
 
+    // LWJGL3 dlopens its bundled native libs with RTLD_DEEPBIND to keep them
+    // isolated. We strip it so LWJGL's GL/GLFW libs resolve our #[no_mangle]
+    // hooks -- but NOT for libfreetype: stripping its DEEPBIND lets LWJGL's
+    // bundled freetype collide with the system (nix) freetype the JVM's AWT
+    // fontmanager loads, so on shutdown MC frees an LWJGL-created FT_Library with
+    // the wrong freetype and segfaults (FreeTypeUtil.destroy -> FT_Done_Library).
+    // We don't hook freetype, so leave its isolation alone.
     #[cfg(target_os = "linux")]
     let clean = {
-        let c = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
-        if c != flags { tracing::debug!("dlopen: stripped RTLD_DEEPBIND"); }
-        c
+        let isolate = !path.is_null()
+            && std::ffi::CStr::from_ptr(path).to_bytes().windows(8).any(|w| w == b"freetype");
+        if isolate {
+            flags
+        } else {
+            let c = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
+            if c != flags { tracing::debug!("dlopen: stripped RTLD_DEEPBIND"); }
+            c
+        }
     };
     #[cfg(target_os = "macos")]
     let clean = flags;
