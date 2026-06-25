@@ -11,6 +11,7 @@ pub use callbacks::{
     update_key_rebinds, physical_key_for,
     set_gui_visible, gui_is_visible,
     set_gui_wants_keyboard, gui_wants_keyboard,
+    set_popup_capturing_mouse, popup_capturing_mouse,
     push_gui_button_press, push_gui_button_release,
     take_gui_button_press, take_gui_button_release,
     push_gui_rbutton_press, push_gui_rbutton_release,

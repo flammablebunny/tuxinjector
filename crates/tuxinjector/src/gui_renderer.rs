@@ -10,6 +10,24 @@ use tuxinjector_gui::SettingsApp;
 use crate::gl_resolve::EglGetProcAddressFn;
 use crate::state;
 
+// The self-updater lives in tuxinjector-gui and only exists on Linux/macOS;
+// these wrappers keep the render loop free of cfg noise.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn update_popup_should_show() -> bool {
+    tuxinjector_gui::updater::popup_should_show()
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn update_popup_should_show() -> bool {
+    false
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn render_update_popup(ui: &imgui::Ui) {
+    tuxinjector_gui::updater::render_popup(ui);
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn render_update_popup(_ui: &imgui::Ui) {}
+
 struct ActiveToast {
     msg: String,
     color: [f32; 4],
@@ -167,8 +185,15 @@ impl GuiRenderer {
         }
         let has_toasts = !self.toasts.is_empty();
 
+        // The self-update launch popup draws over the game when the settings GUI
+        // is closed (when it's open, the General tab already shows the status).
+        let popup_showing = !self.visible && update_popup_should_show();
+
         // bail early if there's nothing to draw
-        if (!self.visible && !show_perf && !has_toasts) || vp_w == 0 || vp_h == 0 {
+        if (!self.visible && !show_perf && !has_toasts && !popup_showing) || vp_w == 0 || vp_h == 0
+        {
+            // make sure clicks aren't still being stolen for a popup we won't draw
+            tuxinjector_input::set_popup_capturing_mouse(false);
             return;
         }
 
@@ -191,8 +216,9 @@ impl GuiRenderer {
             io.display_framebuffer_scale = [1.0, 1.0];
             io.delta_time = dt.max(0.0001); // imgui panics on zero dt
             io.font_global_scale = gui_scale;
-            // (key_repeat_* config now drives the game's key repeat via the input
-            // crate, not imgui's own settings-window repeat - see tick_key_repeat)
+            // NOTE: used to map key_repeat_* onto imgui's key_repeat_delay/rate here,
+            // but that only affected the settings window. The input crate now owns
+            // repeat for the actual game - see tick_key_repeat.
 
             for &(glfw_key, pressed, mods) in &input.keys {
                 self.last_mods = mods;
@@ -277,12 +303,22 @@ impl GuiRenderer {
                 app_out = Some(self.app.render(ui, captured_key));
             }
 
+            // update popup: drawn over the game whenever the settings GUI is hidden
+            if popup_showing {
+                render_update_popup(ui);
+            }
+
             draw_toasts(ui, &self.toasts);
         }
 
         // --- GPU render ---
         let draw_data = self.imgui.render();
         self.renderer.render(draw_data).expect("imgui-glow render failed");
+
+        // Tell the input layer whether the popup is grabbing the cursor this frame,
+        // so left-clicks over it get routed to imgui (and clicks elsewhere don't).
+        let popup_wants_mouse = popup_showing && self.imgui.io().want_capture_mouse;
+        tuxinjector_input::set_popup_capturing_mouse(popup_wants_mouse);
 
         // --- post-render ---
         for t in &mut self.toasts {

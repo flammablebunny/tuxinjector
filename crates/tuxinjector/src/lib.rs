@@ -168,6 +168,11 @@ fn init() {
 
     // watches wpstateout.txt for game state changes
     state_watcher::spawn_state_watcher();
+
+    // background-check GitHub for a newer tuxinjector build. Staged on disk and
+    // applied on next launch (or via the GUI's "Restart Now") -- never forced.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    tuxinjector_gui::spawn_update_check(env!("CARGO_PKG_VERSION"));
 }
 
 #[dtor]

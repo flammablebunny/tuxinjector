@@ -585,6 +585,10 @@ pub fn window_logical_size() -> Option<(i32, i32)> {
 
 static GUI_VISIBLE: AtomicBool = AtomicBool::new(false);
 static GUI_WANTS_KB: AtomicBool = AtomicBool::new(false);
+// True while the self-update launch popup is on screen AND the cursor is over it.
+// Lets the input handler route left-clicks to imgui even when the settings GUI is
+// closed, without consuming clicks aimed elsewhere (the game's own menus).
+static POPUP_CAPTURING_MOUSE: AtomicBool = AtomicBool::new(false);
 static GUI_BTN_PRESSED: AtomicBool = AtomicBool::new(false);
 static GUI_BTN_RELEASED: AtomicBool = AtomicBool::new(false);
 static GUI_RBTN_PRESSED: AtomicBool = AtomicBool::new(false);
@@ -615,6 +619,16 @@ pub fn set_gui_wants_keyboard(wants: bool) {
 /// true when an imgui text field has focus
 pub fn gui_wants_keyboard() -> bool {
     GUI_WANTS_KB.load(Ordering::Relaxed)
+}
+
+/// Set by the renderer each frame: true when the update popup is up and the
+/// cursor is hovering it (imgui's want_capture_mouse).
+pub fn set_popup_capturing_mouse(capturing: bool) {
+    POPUP_CAPTURING_MOUSE.store(capturing, Ordering::Relaxed);
+}
+
+pub fn popup_capturing_mouse() -> bool {
+    POPUP_CAPTURING_MOUSE.load(Ordering::Relaxed)
 }
 
 pub fn push_gui_button_press() {

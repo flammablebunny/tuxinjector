@@ -283,6 +283,16 @@ impl InputHandler for TuxinjectorInputHandler {
             return (true, encoded);
         }
 
+        // Settings GUI is closed, but the update launch popup may be up. Route a
+        // left click to imgui only when the cursor is actually over the popup, so
+        // clicks anywhere else still reach the game.
+        if button == 0 && tuxinjector_input::popup_capturing_mouse() {
+            if action == 1 { tuxinjector_input::push_gui_button_press(); }
+            else if action == 0 { tuxinjector_input::push_gui_button_release(); }
+            tuxinjector_input::push_gui_button_mods(mods);
+            return (true, encoded);
+        }
+
         let (consumed, actions) = self.hotkeys.process_key(remapped, 0, action, mods);
         for a in &actions { self.dispatch(a); }
         if consumed { return (true, encoded); }

@@ -39,6 +39,13 @@ pub fn render(
     profile_delete: &mut Option<String>,
     profile_rename: &mut Option<(String, String)>,
 ) {
+    // -- Updates --
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        update_section(ui);
+        ui.dummy([0.0, 12.0]);
+    }
+
     // -- Profile selector --
     ui.separator(); ui.text("Profile");
     ui.dummy([0.0, 4.0]);
@@ -366,6 +373,75 @@ fn hotkey_row(
             if ui.small_button(format!("Clear##{id}")) {
                 keys.clear();
                 *dirty = true;
+            }
+        }
+    }
+}
+
+// Self-update status + controls. The check runs in the background from load; this
+// just renders whatever state it's reached and wires the buttons. Staged updates
+// apply on the next launch, so "Restart Now" is always optional.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn update_section(ui: &imgui::Ui) {
+    use crate::updater::{self, UpdatePhase};
+
+    const AMBER: [f32; 4] = [1.0, 0.784, 0.196, 1.0];
+    const GREEN: [f32; 4] = [0.502, 0.804, 0.502, 1.0];
+    const RED: [f32; 4] = [0.902, 0.412, 0.412, 1.0];
+    const GREY: [f32; 4] = [0.6, 0.6, 0.6, 1.0];
+
+    let (current, latest, error) = updater::info();
+    let cur = if current.is_empty() { "?" } else { current.as_str() };
+
+    // Header line: "tuxinjector  vX.Y.Z  <status>  [button]" all share one row.
+    ui.separator();
+    ui.text("tuxinjector");
+    ui.same_line();
+    ui.text_colored(GREY, format!("v{cur}"));
+
+    match updater::phase() {
+        UpdatePhase::Checking => {
+            ui.same_line();
+            ui.text_colored(GREY, "checking for updates\u{2026}");
+        }
+        UpdatePhase::UpToDate => {
+            ui.same_line();
+            ui.text_colored(GREEN, "up to date");
+            ui.same_line();
+            if ui.small_button("Check") {
+                updater::recheck();
+            }
+        }
+        UpdatePhase::Available => {
+            ui.same_line();
+            ui.text_colored(AMBER, format!("update available: {latest}"));
+            ui.same_line();
+            if ui.small_button("Download & Install") {
+                updater::install();
+            }
+        }
+        UpdatePhase::Downloading => {
+            ui.same_line();
+            ui.text_colored(AMBER, "downloading\u{2026}");
+        }
+        UpdatePhase::Installed => {
+            ui.same_line();
+            ui.text_colored(GREEN, format!("updated to {latest}"));
+            ui.same_line();
+            if ui.small_button("Restart Now") {
+                updater::restart_now();
+            }
+            ui.text_colored(GREY, "Restart the game to apply (or it loads on next launch).");
+        }
+        UpdatePhase::Failed => {
+            ui.same_line();
+            ui.text_colored(RED, "couldn't check for updates");
+            ui.same_line();
+            if ui.small_button("Retry") {
+                updater::recheck();
+            }
+            if !error.is_empty() {
+                ui.text_colored(GREY, &error);
             }
         }
     }
