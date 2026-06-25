@@ -59,15 +59,27 @@ fn main() {
         .as_deref()
         .and_then(|csv| find_latest_hash(csv, filename));
 
-    // Manual pin: embed a local binary instead of downloading. Still verified
-    // against legal-dlls.csv, so the pinned file must be a legal build. Use this
-    // when the rolling `liblogger-legal` release lags the CSV (e.g. the CSV
-    // legalized 1.0.2 but the release still serves the 1.0.1 binary).
+    // Escape hatch: point at a local .so and embed that instead of downloading.
+    // We still hash-check it against legal-dlls.csv, so the file you pin has to
+    // be a legal build. Handy when the rolling `liblogger-legal` release lags
+    // the CSV - e.g. CSV legalized 1.0.2 but the release still ships 1.0.1.
+    //
+    // For testing an unlegalized local build (a dev liblogger that isn't in the
+    // CSV yet), set TUXINJECTOR_LIBLOGGER_UNVERIFIED=1 to downgrade the hash
+    // mismatch from a hard error to a loud warning. Such a build is NOT legal.
     println!("cargo:rerun-if-env-changed=TUXINJECTOR_LIBLOGGER_PATH");
+    println!("cargo:rerun-if-env-changed=TUXINJECTOR_LIBLOGGER_UNVERIFIED");
     if let Ok(path) = env::var("TUXINJECTOR_LIBLOGGER_PATH") {
         let bytes = fs::read(&path)
             .unwrap_or_else(|e| panic!("read TUXINJECTOR_LIBLOGGER_PATH ({path}): {e}"));
-        verify_or_panic(filename, &expected_hash, &bytes);
+        let matches = expected_hash.as_deref() == Some(sha512_hex(&bytes).as_str());
+        if !matches && env::var("TUXINJECTOR_LIBLOGGER_UNVERIFIED").is_ok() {
+            println!("cargo:warning=tuxinjector: pinned UNVERIFIED liblogger from {path}");
+            println!("cargo:warning=tuxinjector: SHA-512 does NOT match legal-dlls.csv -- this build is NOT legal on MCSR Ranked / speedrun.com");
+        } else {
+            // matches -> prints the verified line; mismatch -> panics with detail
+            verify_or_panic(filename, &expected_hash, &bytes);
+        }
         fs::write(&out_path, &bytes).expect("write pinned liblogger to OUT_DIR");
         println!("cargo:warning=tuxinjector: pinned liblogger from {path}");
         return;
@@ -95,9 +107,9 @@ fn main() {
     fs::write(&out_path, &bytes).expect("write liblogger to OUT_DIR");
 }
 
-/// Verify a liblogger binary's SHA-512 against the expected (latest) hash from
-/// legal-dlls.csv. Panics on mismatch. Warns (but allows) if the CSV had no
-/// entry for this filename — such a build is not legal.
+// Hash-check a liblogger binary against the latest legal-dlls.csv entry.
+// Mismatch -> panic. No CSV entry at all -> warn and let it through, but that
+// build won't be legal on speedrun.com / MCSR Ranked.
 fn verify_or_panic(filename: &str, expected_hash: &Option<String>, bytes: &[u8]) {
     match expected_hash {
         Some(expected) => {
