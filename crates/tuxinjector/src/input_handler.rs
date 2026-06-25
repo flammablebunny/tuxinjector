@@ -34,7 +34,11 @@ impl TuxinjectorInputHandler {
         let mut sens = SensitivityState::new();
         sens.set_base_sensitivity(cfg.input.mouse_sensitivity);
 
-        tuxinjector_input::set_key_repeat_table(&rebinder.repeat_table());
+        tuxinjector_input::set_key_repeat(
+            cfg.input.key_repeat_enabled,
+            cfg.input.key_repeat_start_delay,
+            cfg.input.key_repeat_delay,
+        );
 
         Self {
             hotkeys,
@@ -64,7 +68,11 @@ impl TuxinjectorInputHandler {
             self.rebinder.update_from_config(&cfg.input.key_rebinds);
             tuxinjector_input::update_key_rebinds(&self.rebinder.active_rebinds());
             self.sens.set_base_sensitivity(cfg.input.mouse_sensitivity);
-            tuxinjector_input::set_key_repeat_table(&self.rebinder.repeat_table());
+            tuxinjector_input::set_key_repeat(
+                cfg.input.key_repeat_enabled,
+                cfg.input.key_repeat_start_delay,
+                cfg.input.key_repeat_delay,
+            );
 
             // pick up Lua action bindings stashed by the reload path
             if let Some(bindings) = state::get().lua_bindings.lock().unwrap().take() {
@@ -81,8 +89,9 @@ impl TuxinjectorInputHandler {
             }
         }
 
-        // With no live game-state mod, hotkey game-state conditions act as "Any"
-        // so state-conditioned hotkeys still fire instead of never matching.
+        // If there's no live game-state mod hooked up, treat state conditions as
+        // "Any" - otherwise state-conditioned hotkeys would never match and just
+        // silently do nothing.
         let state_live = matches!(
             tuxinjector_gui::state_mod_status(),
             tuxinjector_gui::StateModStatus::Hermes | tuxinjector_gui::StateModStatus::StateOutput

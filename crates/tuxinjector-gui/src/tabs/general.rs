@@ -56,13 +56,14 @@ pub fn render(
         config.profile.clone()
     };
 
+    // if launched with --profile, the user can't switch profiles from here
     let pinned = tuxinjector_config::profile_override().is_some();
 
     ui.text("Active Profile:");
     ui.same_line();
     ui.set_next_item_width(200.0);
     {
-        let _dis = ui.begin_disabled(pinned);
+        let _guard = ui.begin_disabled(pinned);
         if let Some(_token) = ui.begin_combo("##profile_select", &cur_label) {
             if ui.selectable_config("(Default)")
                 .selected(config.profile.is_empty())
@@ -229,6 +230,27 @@ pub fn render(
         *dirty = true;
     }
 
+    ui.dummy([0.0, 6.0]);
+    // Global custom key repeat. Heads up: this applies to ALL held keys, so it
+    // also changes how fast Escape etc. repeat.
+    if ui.checkbox("Custom Key Repeat Rate", &mut config.input.key_repeat_enabled) {
+        *dirty = true;
+    }
+    if config.input.key_repeat_enabled {
+        ui.text("Start Delay (ms):");
+        ui.same_line();
+        ui.set_next_item_width(160.0);
+        if crate::widgets::slider_int(ui, "##kr_start", &mut config.input.key_repeat_start_delay, 0, 2000, "%d ms") {
+            *dirty = true;
+        }
+        ui.text("Repeat Rate (ms):");
+        ui.same_line();
+        ui.set_next_item_width(160.0);
+        if crate::widgets::slider_int(ui, "##kr_delay", &mut config.input.key_repeat_delay, 1, 500, "%d ms") {
+            *dirty = true;
+        }
+    }
+
     ui.dummy([0.0, 8.0]);
     if ui.checkbox("Disable All Animations", &mut config.display.disable_animations) {
         *dirty = true;
@@ -307,8 +329,9 @@ pub fn render(
     if ui.small_button("Configure##launch_cfg") {
         state.show_launch_apps_config = !state.show_launch_apps_config;
     }
-    // which apps that hotkey launches -- revealed by Configure, same line.
+    // Configure toggles the per-app checkboxes, shown inline on the same row
     if state.show_launch_apps_config {
+        // zero the vertical frame padding so the checkboxes line up with the row above
         let fp = ui.clone_style().frame_padding;
         let _pad = ui.push_style_var(imgui::StyleVar::FramePadding([fp[0], 0.0]));
         ui.same_line();

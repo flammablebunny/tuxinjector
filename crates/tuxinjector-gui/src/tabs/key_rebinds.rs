@@ -170,42 +170,6 @@ fn toggle_enabled(config: &mut Config, from: u32, on: bool) {
     }
 }
 
-// -- Per-key custom repeat helpers --
-
-fn find_entry(config: &Config, from: u32) -> Option<&KeyRebind> {
-    config.input.key_rebinds.rebinds.iter().find(|r| r.from_key == from)
-}
-
-fn repeat_enabled_for(config: &Config, from: u32) -> bool {
-    find_entry(config, from).map_or(false, |r| r.repeat_enabled)
-}
-
-fn repeat_vals(config: &Config, from: u32) -> (i32, i32) {
-    find_entry(config, from)
-        .map(|r| (r.repeat_start_delay, r.repeat_delay))
-        .unwrap_or((200, 5))
-}
-
-// Find the rebind entry for `from`, creating a repeat-only one (no remap) if
-// none exists. Enables the rebinds subsystem so the entry takes effect.
-fn entry_mut(config: &mut Config, from: u32) -> &mut KeyRebind {
-    config.input.key_rebinds.enabled = true;
-    if !config.input.key_rebinds.rebinds.iter().any(|r| r.from_key == from) {
-        config.input.key_rebinds.rebinds.push(KeyRebind { from_key: from, ..KeyRebind::default() });
-    }
-    config.input.key_rebinds.rebinds.iter_mut().find(|r| r.from_key == from).unwrap()
-}
-
-fn set_repeat_enabled(config: &mut Config, from: u32, on: bool) {
-    entry_mut(config, from).repeat_enabled = on;
-}
-
-fn set_repeat_vals(config: &mut Config, from: u32, start: i32, interval: i32) {
-    let e = entry_mut(config, from);
-    e.repeat_start_delay = start;
-    e.repeat_delay = interval;
-}
-
 // -- Color helpers --
 
 fn rgb(r: u8, g: u8, b: u8) -> [f32; 4] {
@@ -635,39 +599,6 @@ fn rebind_editor(
             state.game_text.clear();
             state.capturing = Some(CaptureTarget::Game);
         }
-    }
-
-    // -- per-key custom repeat rate --
-    ui.dummy([0.0, 6.0]);
-    ui.separator();
-    let mut rpt = repeat_enabled_for(config, sel);
-    if ui.checkbox(format!("Custom Repeat Rate##rpt_en_{sel}"), &mut rpt) {
-        set_repeat_enabled(config, sel, rpt);
-        *dirty = true;
-    }
-    if rpt {
-        let (mut start, mut interval) = repeat_vals(config, sel);
-        ui.text("Start Delay (ms):");
-        ui.same_line();
-        ui.set_next_item_width(120.0);
-        let start_id = format!("##rpt_start_{sel}");
-        if crate::widgets::slider_int(ui, &start_id, &mut start, 0, 2000, "%d ms") {
-            set_repeat_vals(config, sel, start, interval);
-            *dirty = true;
-        }
-        ui.text("Repeat Delay (ms):");
-        ui.same_line();
-        ui.set_next_item_width(120.0);
-        let delay_id = format!("##rpt_delay_{sel}");
-        if crate::widgets::slider_int(ui, &delay_id, &mut interval, 1, 500, "%d ms") {
-            set_repeat_vals(config, sel, start, interval);
-            *dirty = true;
-        }
-        crate::widgets::text_wrapped_colored(
-            ui, rgb(130, 140, 150),
-            "Lower Repeat Delay = faster. tuxinjector drives this key's repeat \
-             instead of the OS, so other keys (Escape, etc.) are unaffected.",
-        );
     }
 
     ui.dummy([0.0, 6.0]);

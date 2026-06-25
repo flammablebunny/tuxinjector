@@ -1382,14 +1382,6 @@ pub struct KeyRebind {
     pub to_key_chat: u32,
     #[serde(default = "defaults::enabled_true")]
     pub enabled: bool,
-    // Per-key custom repeat: when enabled, tuxinjector swallows this key's native
-    // OS repeat and re-emits it at repeat_start_delay + repeat_delay (ms).
-    #[serde(default)]
-    pub repeat_enabled: bool,
-    #[serde(default = "defaults::key_repeat_start_delay")]
-    pub repeat_start_delay: i32,
-    #[serde(default = "defaults::key_repeat_delay")]
-    pub repeat_delay: i32,
 }
 
 impl Default for KeyRebind {
@@ -1399,9 +1391,6 @@ impl Default for KeyRebind {
             to_key: 0,
             to_key_chat: 0,
             enabled: true,
-            repeat_enabled: false,
-            repeat_start_delay: 200,
-            repeat_delay: 5,
         }
     }
 }
@@ -1435,6 +1424,15 @@ pub struct InputConfig {
     pub windows_mouse_speed: i32,
     #[serde(default)]
     pub allow_cursor_escape: bool,
+    // Global custom key repeat. When on, tuxinjector eats the OS key repeat for
+    // every held key and drives it itself: first tick after start_delay, then one
+    // every delay (ms). Off by default so the OS cadence is untouched.
+    #[serde(default)]
+    pub key_repeat_enabled: bool,
+    #[serde(default = "defaults::key_repeat_start_delay")]
+    pub key_repeat_start_delay: i32,
+    #[serde(default = "defaults::key_repeat_delay")]
+    pub key_repeat_delay: i32,
     #[serde(default)]
     pub key_rebinds: KeyRebindsConfig,
     #[serde(default)]
@@ -1447,6 +1445,9 @@ impl Default for InputConfig {
             mouse_sensitivity: 1.0,
             windows_mouse_speed: 0,
             allow_cursor_escape: true,
+            key_repeat_enabled: false,
+            key_repeat_start_delay: 200,
+            key_repeat_delay: 5,
             key_rebinds: KeyRebindsConfig::default(),
             sensitivity_hotkeys: Vec::new(),
         }
@@ -1743,7 +1744,7 @@ pub struct GlobalHotkeysConfig {
     pub app_visibility: Vec<u32>,
     #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
     pub launch_apps: Vec<u32>,
-    // which companion apps the "Launch Companion Apps" hotkey starts
+    // which companion apps the "Launch Companion Apps" hotkey actually fires up
     #[serde(default = "defaults::bool_true")]
     pub launch_nbb: bool,
     #[serde(default = "defaults::bool_true")]
