@@ -8,6 +8,8 @@ use imgui::{SliderFlags, StyleColor, Ui};
 // Tracks which slider is currently in inline text-edit mode (right-click to type).
 thread_local! {
     static EDITING_SLIDER: RefCell<Option<String>> = RefCell::new(None);
+    // Set on the frame we enter edit mode so we only grab focus once. Calling
+    // set_keyboard_focus_here every frame stole focus and you couldn't click out.
     static FOCUS_PENDING: Cell<bool> = Cell::new(false);
 }
 
@@ -19,6 +21,7 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
 
     if editing {
         // inline text input - same look as native Ctrl+Click
+        // grab focus just on the first frame, then leave it alone
         if FOCUS_PENDING.with(|f| f.replace(false)) {
             ui.set_keyboard_focus_here();
         }
@@ -52,6 +55,7 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
             EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
+            // arm the one-shot focus grab for next frame's edit box
             FOCUS_PENDING.with(|f| f.set(true));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
@@ -65,6 +69,7 @@ pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt
     let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
 
     if editing {
+        // only steal focus on the frame we first start editing
         if FOCUS_PENDING.with(|f| f.replace(false)) {
             ui.set_keyboard_focus_here();
         }
@@ -113,6 +118,7 @@ pub fn slider_float_log(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32,
     let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
 
     if editing {
+        // see slider_int - one-shot focus grab, same deal here
         if FOCUS_PENDING.with(|f| f.replace(false)) {
             ui.set_keyboard_focus_here();
         }

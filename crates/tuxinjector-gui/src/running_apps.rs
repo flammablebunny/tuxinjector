@@ -123,34 +123,31 @@ fn hidden_set() -> &'static Mutex<HashSet<u32>> {
     H.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// Mark a pid as launched-hidden (skipped by the overlay embed loop).
 pub fn mark_hidden(pid: u32) {
     if let Ok(mut h) = hidden_set().lock() {
         h.insert(pid);
     }
 }
 
-/// Whether this pid is currently launch-hidden.
 pub fn is_hidden(pid: u32) -> bool {
     hidden_set().lock().map(|h| h.contains(&pid)).unwrap_or(false)
 }
 
-/// Whether any app is currently launch-hidden.
 pub fn any_hidden() -> bool {
     hidden_set().lock().map(|h| !h.is_empty()).unwrap_or(false)
 }
 
-/// Reveal all launch-hidden apps (used by the app-visibility toggle).
+// Reveal everything at once -- the app-visibility toggle just dumps the whole set.
 pub fn clear_hidden() {
     if let Ok(mut h) = hidden_set().lock() {
         h.clear();
     }
 }
 
-/// SIGTERM a registered app by pid and unregister it. Use this to stop an app
-/// whose `Child` handle this caller doesn't own (e.g. one launched by the
-/// "Launch Companion Apps" hotkey or by Lua `exec`) -- the handle's owner reaps
-/// the now-dead child on its next poll.
+// SIGTERM a registered app by pid and unregister it. Handy when we don't own the
+// `Child` handle ourselves (e.g. apps spawned by the "Launch Companion Apps"
+// hotkey or by Lua `exec`) -- whoever owns the handle reaps the dead child on its
+// next poll, so we don't wait() here.
 pub fn stop_pid(pid: u32) {
     #[cfg(unix)]
     if pid > 0 {

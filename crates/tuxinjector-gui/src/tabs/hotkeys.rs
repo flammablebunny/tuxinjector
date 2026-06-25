@@ -38,8 +38,9 @@ pub fn render(
         }
     }
 
-    // No live game-state mod -> "Required Game States" conditions are ignored
-    // (treated as "Any"), so every state-conditioned hotkey still fires.
+    // Without a live game-state mod we can't read the instance state, so we just
+    // ignore "Required Game States" (treat it as "Any") and let every hotkey fire.
+    // Warn the user here so they aren't surprised when conditions don't apply.
     if crate::state_mod_status() == crate::StateModStatus::Missing {
         crate::widgets::text_wrapped_colored(
             ui,

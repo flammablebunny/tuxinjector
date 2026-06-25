@@ -331,7 +331,8 @@ static GRACEFUL_CHILD_SHUTDOWN: extern "C" fn() = graceful_child_shutdown;
 // dispatch pending commands from the Lua runtime (called each frame)
 fn process_lua_commands() {
     reap_children();
-    // drain "Launch Companion Apps" hotkey requests (runs even with no Lua/scene)
+    // drain pending "Launch Companion Apps" hotkey presses -- has to run even
+    // when there's no Lua loaded and nothing on screen
     tuxinjector_gui::tabs::apps::poll_launch_requests();
     let tx = state::get();
     let runtime = match tx.lua_runtime.get() {
@@ -786,8 +787,8 @@ pub fn set_scene_active(active: bool) {
 unsafe fn render_overlay() {
     if !INITIALIZED.load(Ordering::Acquire) { return; }
 
-    // Drive self-driven key repeat every frame on the game thread (no-op unless
-    // enabled). Runs before the fast-path return so it ticks even with no scene.
+    // Tick our own key-repeat on the game thread. No-op unless repeat is on.
+    // Keep this above the fast-path return so it still fires with an empty scene.
     tuxinjector_input::tick_key_repeat();
 
     // fast path: if scene was empty last frame, gui is hidden, AND there
@@ -832,15 +833,15 @@ unsafe fn render_overlay() {
 
                 let (mw, mh) = crate::viewport_hook::get_mode_size();
 
-                // Snapshot the game's real viewport before our present mutates it.
-                // tux changes glViewport directly (bypassing MC's GlStateManager) in
-                // center_game_content and the present tail below. Sodium caches the
-                // GlStateManager viewport and SKIPS "redundant" glViewport calls, so
-                // leaving a window-sized viewport here makes Sodium skip the game's
-                // next (mode-sized) viewport set -> the game renders through our stale
-                // viewport -> broken resize. We restore this at the end so the real GL
-                // viewport stays equal to Sodium's cache. (Harmless no-op without a
-                // resize mode, where saved == restored == window size.)
+                // Grab the game's real viewport before our present stomps on it.
+                // We call glViewport directly (behind MC's back, i.e. not through
+                // GlStateManager) in center_game_content and in the present tail
+                // below. Sodium caches the GlStateManager viewport and skips any
+                // glViewport it thinks is redundant -- so if we leave a window-sized
+                // viewport here, Sodium drops the game's next (mode-sized) viewport
+                // set and the game ends up drawing through our stale one. Broken
+                // resize. We put it back at the end so real GL state == Sodium's
+                // cache. No-op outside resize modes (saved == window size == restored).
                 let mut saved_vp = [0i32; 4];
                 (gl.get_integer_v)(0x0BA2 /* GL_VIEWPORT */, saved_vp.as_mut_ptr());
 
@@ -902,11 +903,10 @@ unsafe fn render_overlay() {
                 (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
                 (gl.bind_buffer)(GL_PIXEL_PACK_BUFFER, 0);
 
-                // Restore the game's viewport (snapshotted above) so the real GL
-                // state matches MC/Sodium's cached viewport. Must be the last GL
-                // call here -- the overlay legitimately rendered at window size via
-                // the (gl.viewport)(0,0,w,h) above, and this only takes effect for
-                // the game's next frame.
+                // Put the saved viewport back so real GL state lines up with
+                // MC/Sodium's cached one. Has to be the very last GL call here --
+                // the overlay genuinely drew at window size via the viewport(0,0,w,h)
+                // above; this only matters for the game's next frame.
                 (gl.viewport)(saved_vp[0], saved_vp[1], saved_vp[2], saved_vp[3]);
             } else if let Err(e) = overlay.render_and_composite(w, h) {
                 tracing::error!("overlay render failed: {e}");

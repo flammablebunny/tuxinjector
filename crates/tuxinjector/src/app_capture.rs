@@ -143,6 +143,7 @@ impl AppCaptureManager {
     }
 
     pub fn set_visible(&mut self, visible: bool) {
+        // Caller decides on/off now instead of us toggling blindly
         self.visible = visible;
         tracing::debug!(visible, "set anchored app visibility");
     }

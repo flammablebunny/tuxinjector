@@ -240,8 +240,8 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
         return 0;
     }
 
-    // a "block key from game" hotkey is actively holding this key: keep it
-    // released for polling-based input until the physical key is let go.
+    // A "block key from game" hotkey is currently holding this one down, so
+    // keep it released for any polling-based input until the real key comes up.
     if callbacks::is_blocked_from_game(key) {
         return GLFW_RELEASE;
     }
@@ -250,6 +250,7 @@ pub unsafe extern "C" fn glfwGetKey(window: GlfwWindow, key: c_int) -> c_int {
         return GLFW_PRESS;
     }
 
+    // This key got remapped to something else, don't leak its raw state.
     if callbacks::is_rebind_source(key) {
         return GLFW_RELEASE;
     }
@@ -378,7 +379,7 @@ pub unsafe extern "C" fn glfwGetMouseButton(window: GlfwWindow, button: c_int) -
         return 0;
     }
 
-    // Remapped-away source button must read released (don't leak its raw state).
+    // Same deal as glfwGetKey: a remapped-away source button reads as released.
     if callbacks::is_rebind_source(encoded) {
         return 0; // GLFW_RELEASE
     }

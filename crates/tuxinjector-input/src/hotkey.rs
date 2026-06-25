@@ -56,11 +56,11 @@ pub struct HotkeyEngine {
     // indices of bindings that already fired for current key combo
     fired: HashSet<usize>,
     game_state: String,
-    // Current active mode id, used by SwitchMode's allow_exit_fullscreen bypass.
+    // which mode we're in right now - needed for the allow_exit_fullscreen bypass
     current_mode: String,
-    // Whether a live game-state source (Hermes / State Output) is present. When
-    // false, game-state conditions are treated as "Any" so state-conditioned
-    // hotkeys still fire instead of silently never matching.
+    // do we actually have a live state source (Hermes / State Output)?
+    // if not, we can't trust game_state, so we treat conditions as "Any"
+    // otherwise state-conditioned hotkeys would just silently never fire
     state_available: bool,
 }
 
@@ -83,15 +83,12 @@ impl HotkeyEngine {
         }
     }
 
-    // Current active mode id (for SwitchMode's allow_exit_fullscreen bypass).
     pub fn set_current_mode(&mut self, mode: &str) {
         if self.current_mode != mode {
             self.current_mode = mode.to_string();
         }
     }
 
-    // Set whether a live game-state source is present. When false, game-state
-    // conditions are ignored (treated as "Any") so hotkeys still fire.
     pub fn set_state_available(&mut self, available: bool) {
         self.state_available = available;
     }
@@ -335,17 +332,16 @@ impl HotkeyEngine {
     }
 
     fn check_match(&self, bind: &Binding, action: i32) -> bool {
-        // game-state condition - only enforced when a live state source is
-        // present. With no source (no Hermes / State Output, or a stale one) we
-        // treat the condition as "Any" so state-conditioned hotkeys still fire.
+        // Only enforce the game-state condition if we actually have a live state
+        // source. No Hermes / State Output (or it's stale)? Then treat it as "Any"
+        // so these hotkeys still fire instead of being dead.
         if self.state_available && !bind.conditions.game_state.is_empty() {
-            // "Allow exit to fullscreen regardless of game state": only bypass
-            // the condition when this press would LEAVE the resize mode (back
-            // toward fullscreen), never when it would ENTER one - otherwise the
-            // flag would let you re-enter the resize in any state. The resize
-            // mode is `secondary` (or `main` for a simple toggle with no
-            // secondary); the toggle returns you to fullscreen only while you're
-            // already in that resize mode.
+            // The "allow exit to fullscreen regardless of game state" flag is
+            // one-way: it only lets the press through when we're LEAVING the
+            // resize mode, never when entering it. Otherwise you'd be able to
+            // re-enter the resize in any state, which defeats the whole point.
+            // resize_mode is `secondary`, or `main` if there's no secondary (a
+            // plain toggle). We're only "leaving" it when we're already in it.
             let exit_bypass = if let HotkeyAction::SwitchMode {
                 main, secondary, allow_exit_fullscreen,
             } = &bind.action {

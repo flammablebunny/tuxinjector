@@ -32,6 +32,9 @@ pub struct ConfigWatcher {
     _watcher: Option<RecommendedWatcher>,
 }
 
+// Figure out which config file we should actually reload. The in-memory
+// override wins (set by the GUI mid-session), otherwise fall back to whatever
+// active_profile.txt says on disk. Empty / missing => just use init.lua.
 fn resolve_active_config_path(config_dir: &std::path::Path, default_path: &std::path::Path) -> PathBuf {
     let name = match crate::profile_override() {
         Some(n) => n,
@@ -40,9 +43,10 @@ fn resolve_active_config_path(config_dir: &std::path::Path, default_path: &std::
             .unwrap_or_default(),
     };
     if !name.is_empty() {
-        let profile_path = config_dir.join("profiles").join(format!("{name}.lua"));
-        if profile_path.exists() {
-            return profile_path;
+        let profile = config_dir.join("profiles").join(format!("{name}.lua"));
+        // Named profile might not exist yet (e.g. just deleted), so guard it
+        if profile.exists() {
+            return profile;
         }
     }
     default_path.to_path_buf()

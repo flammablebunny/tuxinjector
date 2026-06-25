@@ -1049,19 +1049,16 @@ fn prepare_font_atlas<T: TextureMap>(
     unsafe {
         gl.bind_texture(glow::TEXTURE_2D, Some(gl_texture));
 
-        // Newer Minecraft (Blaze3D, MC 1.21+) leaves GL pixel-unpack state dirty
-        // when this atlas upload runs: a PBO bound to GL_PIXEL_UNPACK_BUFFER makes
-        // tex_image_2d read `Some(data)` as a byte OFFSET into that PBO (garbage
-        // atlas), and a non-zero UNPACK_ROW_LENGTH/SKIP_* unpacks it at the wrong
-        // stride. Either scrambles the whole font atlas -> every glyph illegible.
-        // Neutralize the unpack state for our client-memory upload, then restore
-        // it so we don't clobber the game. (Upstream imgui-glow lacks this; tux's
-        // own scene/bg-image path already does the same -- see overlay.rs.)
-        let saved_pbo = gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING);
-        let saved_row_length = gl.get_parameter_i32(glow::UNPACK_ROW_LENGTH);
-        let saved_skip_rows = gl.get_parameter_i32(glow::UNPACK_SKIP_ROWS);
-        let saved_skip_pixels = gl.get_parameter_i32(glow::UNPACK_SKIP_PIXELS);
-        let saved_alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+        // Newer MC (Blaze3D) can leave a PBO bound to GL_PIXEL_UNPACK_BUFFER, or a
+        // non-default UNPACK_ROW_LENGTH/SKIP_* set, by the time we upload here. Both
+        // wreck this client-memory upload: with a PBO bound, tex_image_2d treats
+        // `data` as a byte offset INTO the PBO -> garbage atlas, every glyph illegible.
+        // So stash the unpack state, zero it for our upload, then put it back below.
+        let old_pbo = gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING);
+        let old_row_len = gl.get_parameter_i32(glow::UNPACK_ROW_LENGTH);
+        let old_skip_rows = gl.get_parameter_i32(glow::UNPACK_SKIP_ROWS);
+        let old_skip_px = gl.get_parameter_i32(glow::UNPACK_SKIP_PIXELS);
+        let old_align = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
 
         gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
@@ -1091,15 +1088,15 @@ fn prepare_font_atlas<T: TextureMap>(
             Some(atlas_texture.data),
         );
 
-        // restore the game's unpack state exactly (to_native_gl maps 0 -> None)
+        // put the game's unpack state back exactly (to_native_gl maps 0 -> None)
         gl.bind_buffer(
             glow::PIXEL_UNPACK_BUFFER,
-            to_native_gl(saved_pbo as u32, glow::NativeBuffer),
+            to_native_gl(old_pbo as u32, glow::NativeBuffer),
         );
-        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, saved_row_length);
-        gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, saved_skip_rows);
-        gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, saved_skip_pixels);
-        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, saved_alignment);
+        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, old_row_len);
+        gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, old_skip_rows);
+        gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, old_skip_px);
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, old_align);
     }
 
     fonts.tex_id = texture_map

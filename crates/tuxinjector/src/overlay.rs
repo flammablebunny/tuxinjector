@@ -756,10 +756,10 @@ impl OverlayState {
                     LaunchMode::Anchored(anchor) => {
                         if !self.windows_visible { continue; }
                         if let Some(cap) = self.app_capture.embed(app.pid, vp_w, vp_h, anchor) {
-                            // Launched-hidden apps are still embedded every frame (window
-                            // discovered, reparented offscreen, capture thread kept warm) and
-                            // only skip compositing -- so revealing them via the visibility
-                            // toggle is instant instead of paying ~2s of first-time setup.
+                            // Keep embedding hidden apps every frame (window found,
+                            // reparented offscreen, capture thread warm) and just don't
+                            // composite them. Means revealing one later is instant rather
+                            // than eating the ~2s first-time setup again.
                             if tuxinjector_gui::running_apps::is_hidden(app.pid) { continue; }
                             scene.elements.push(SceneElement::Textured {
                                 x: cap.anchor_x, y: cap.anchor_y,
@@ -1146,7 +1146,7 @@ impl OverlayState {
     }
 
     pub fn switch_mode(&mut self, mode_id: &str) {
-        // While the tux GUI is open, swallow all mode/resize switches
+        // Don't let mode/resize switches go through while our GUI is up
         if tuxinjector_input::gui_is_visible() {
             tracing::debug!(mode_id, "switch_mode ignored: tux GUI is open");
             return;
@@ -1223,13 +1223,13 @@ impl OverlayState {
     }
 
     pub fn toggle_app_visibility(&mut self) {
-        // "Reveal if anything is hidden, else hide all." This way a single press
-        // reveals apps launched hidden, and with no hidden apps it behaves like a
-        // plain global show/hide flip.
-        let anything_hidden =
+        // Rule: if anything's hidden, reveal everything; otherwise hide everything.
+        // So one press surfaces apps that were launched hidden, and when nothing is
+        // hidden it just acts like a normal show/hide toggle.
+        let reveal =
             !self.app_capture.is_visible() || tuxinjector_gui::running_apps::any_hidden();
-        self.app_capture.set_visible(anything_hidden);
-        if anything_hidden {
+        self.app_capture.set_visible(reveal);
+        if reveal {
             tuxinjector_gui::running_apps::clear_hidden();
         }
     }

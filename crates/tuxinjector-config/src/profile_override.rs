@@ -2,17 +2,18 @@
 
 use std::sync::OnceLock;
 
-/// The launch-command profile override, if any. `Some(name)` overrides
-/// `active_profile.txt`; an empty `name` means the default profile. `None`
-/// means no `--profile` flag was given (fall back to `active_profile.txt`).
+// `Some(name)` wins over active_profile.txt; an empty name == default profile.
+// `None` -> no --profile was passed, so fall back to active_profile.txt.
+// Parsed once (argv doesn't change under us) and cached.
 pub fn profile_override() -> Option<String> {
     static OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
     OVERRIDE.get_or_init(parse_from_args).clone()
 }
 
 fn parse_from_args() -> Option<String> {
-    // `--profile <name>` / `--profile=<name>` on the launch command, else the
-    // collision-proof TUXINJECTOR_PROFILE env var.
+    // Accept both `--profile <name>` and `--profile=<name>`. If neither shows up
+    // we fall back to the env var, which is less likely to clash with whatever
+    // the wrapped game does with its own argv.
     let mut args = std::env::args_os();
     while let Some(arg) = args.next() {
         let arg = arg.to_string_lossy();
@@ -20,7 +21,7 @@ fn parse_from_args() -> Option<String> {
             return Some(rest.trim().to_string());
         }
         if arg == "--profile" {
-            // the name is the next argv token (quote it for names with spaces)
+            // name is the next token - caller has to quote it if it has spaces
             return args.next().map(|n| n.to_string_lossy().trim().to_string());
         }
     }
