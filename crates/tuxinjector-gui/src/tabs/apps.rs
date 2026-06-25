@@ -131,10 +131,10 @@ fn apps_dir() -> PathBuf {
 fn app_jar_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.jar")) }
 fn app_ver_path(id: &str) -> PathBuf { apps_dir().join(format!("{id}.version")) }
 
-/// Active config profile name (empty = default). Resolved the same way the rest
-/// of the app does: a `--profile`/`TUXINJECTOR_PROFILE` launch override wins,
-/// else the shared `active_profile.txt`. Autostart is scoped to this so it
-/// respects the active profile instead of firing for every profile.
+// Active profile name (empty == default). Same resolution order the rest of the
+// app uses: a --profile / TUXINJECTOR_PROFILE launch override wins, otherwise we
+// fall back to the shared active_profile.txt. We scope autostart to this so it
+// doesn't fire for every profile, only the one that's actually active.
 fn active_profile() -> String {
     if let Some(p) = tuxinjector_config::profile_override() {
         return p;
@@ -149,9 +149,9 @@ fn active_profile() -> String {
         .unwrap_or_default()
 }
 
-/// Per-profile, per-app state marker path. The default profile keeps the
-/// original flat path (`apps/{id}.{ext}`) for backward compatibility; named
-/// profiles get their own `apps/profiles/{profile}/{id}.{ext}`.
+// Per-profile, per-app marker file. Keep the default profile on the old flat
+// path (apps/{id}.{ext}) so existing installs don't lose their settings; named
+// profiles get tucked under apps/profiles/{profile}/.
 fn marker_path(id: &str, ext: &str) -> PathBuf {
     let profile = active_profile();
     if profile.is_empty() {
@@ -183,7 +183,8 @@ fn clear_autostart(id: &str) {
     let _ = std::fs::remove_file(autostart_path(id));
 }
 
-// "Launch Hidden" preference -- presence of the marker means enabled.
+// "Launch Hidden" preference. No contents to parse here -- if the marker file
+// exists, it's on.
 fn launchhidden_path(id: &str) -> PathBuf { marker_path(id, "launchhidden") }
 
 fn load_launch_hidden(id: &str) -> bool { launchhidden_path(id).exists() }
@@ -408,8 +409,8 @@ fn launch_app(
         let companion_display = super::super::companion_xserver::ensure_started()
             .map(|n| format!(":{n}"));
         if companion_display.is_none() {
-            return Err("companion Xvfb unavailable - set TUXINJECTOR_XVFB to the Xvfb \
-                        binary path in your wrapper".to_string());
+            return Err("companion Xvfb unavailable - see the tuxinjector log for why \
+                        (it may have failed to spawn, or started and then exited)".to_string());
         }
 
         cmd.env_remove("WAYLAND_DISPLAY")
@@ -425,7 +426,11 @@ fn launch_app(
             Ok(())
         });
     }
-    cmd.spawn()
+    // Spawn on the permanent companion thread: PR_SET_PDEATHSIG fires when the
+    // *creating thread* exits, and autostart launches run on a transient
+    // first-frame/SeedQueue worker - spawning there would SIGTERM the app the
+    // moment that worker returned. (Same reason the companion Xvfb uses this.)
+    super::super::companion_xserver::spawn_companion(cmd)
         .map_err(|e| format!("java -jar: {e} -- is java installed?"))
 }
 
@@ -485,10 +490,10 @@ fn do_launch(
     }
 }
 
-/// Stop a running companion app regardless of how it was launched. If this tab
-/// owns the `Child` (launched via its own buttons) we kill it directly;
-/// otherwise it came up via the hotkey / Lua exec / autostart, so we signal it
-/// by pid through the registry and let its owning reaper clean up the handle.
+// Stop a companion app no matter who started it. If this tab owns the Child
+// (started from one of our own buttons) we just kill it. Otherwise it came up
+// some other way -- hotkey, Lua exec, autostart -- so we only know its pid;
+// signal it through the registry and let whoever owns the handle reap it.
 fn stop_app(name: &str, slot: &mut Option<std::process::Child>) {
     if let Some(child) = slot {
         super::super::running_apps::unregister(child.id());
@@ -505,11 +510,11 @@ fn stop_app(name: &str, slot: &mut Option<std::process::Child>) {
 
 // --- "Launch Companion Apps" hotkey support -------------------------------
 //
-// A global hotkey can launch companion apps with the GUI closed, but the Apps
-// tab's render() only runs when that tab is visible. So launch requests are
-// queued here and drained on the game thread each frame by
-// poll_launch_requests(). Children launched this way are reaped here too (the
-// Apps tab only reaps the ones it launched itself).
+// The global hotkey can fire while the GUI is closed, but render() for this tab
+// only runs while the tab is actually visible. So we can't launch straight from
+// the hotkey handler -- instead we queue the request and drain it on the game
+// thread every frame via poll_launch_requests(). Anything launched this way
+// gets reaped here too, since the Apps tab only knows about its own children.
 
 static LAUNCH_QUEUE: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
 static HOTKEY_PROCS: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
@@ -524,9 +529,9 @@ pub fn request_launch(nbb: bool, paceman: bool) {
 }
 
 /// Drain queued launch requests and reap finished hotkey-launched children.
-/// Call once per frame on the game thread — works with the GUI closed.
+/// Call once per frame on the game thread - works even with the GUI closed.
 pub fn poll_launch_requests() {
-    // reap finished hotkey-launched children so they don't linger as zombies
+    // sweep up any hotkey children that exited, otherwise they hang around as zombies
     if let Ok(mut procs) = HOTKEY_PROCS.lock() {
         procs.retain_mut(|child| match child.try_wait() {
             Ok(Some(_)) => {
@@ -537,11 +542,11 @@ pub fn poll_launch_requests() {
         });
     }
 
-    let reqs: Vec<&'static str> = match LAUNCH_QUEUE.lock() {
+    let pending: Vec<&'static str> = match LAUNCH_QUEUE.lock() {
         Ok(mut q) if !q.is_empty() => std::mem::take(&mut *q),
         _ => return,
     };
-    for id in reqs {
+    for id in pending {
         launch_by_id(id);
     }
 }
@@ -624,9 +629,9 @@ pub fn render(ui: &imgui::Ui, state: &mut AppsState) {
     ui.separator();
     ui.dummy([0.0, 4.0]);
 
-    // Source of truth for "is this app running" is the registry, not our own
-    // state.procs -- an app can also be up from the "Launch Companion Apps"
-    // hotkey or Lua exec/autostart, whose Child handles live elsewhere.
+    // Ask the registry whether something's running, not our own state.procs --
+    // an app might've been started by the hotkey or Lua/autostart, in which case
+    // its Child handle lives somewhere else entirely.
     let running_now = super::super::running_apps::list();
 
     for (i, app) in APPS.iter().enumerate() {
