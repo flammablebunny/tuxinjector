@@ -643,12 +643,17 @@ unsafe fn do_toggle_borderless() {
         set_size(glfw_win, sw, sh);
         fire_borderless_fb_cb(glfw_win, sw, sh);
 
-        // tell the compositor this is fullscreen (hides bars on Hyprland/XWayland)
+        // Tell the compositor this is fullscreen so it hides its bars. The X11
+        // path no-ops on native Wayland (no GLX display / X11 window), so also
+        // drive xdg_toplevel.set_fullscreen directly; that one no-ops on X11
+        // (no toplevel was ever captured). Exactly one of them does the work.
         set_x11_fullscreen_state(true);
+        crate::wayland_hook::set_fullscreen(true);
 
         tracing::info!(sw, sh, "toggle_borderless: entered borderless fullscreen");
     } else {
         set_x11_fullscreen_state(false);
+        crate::wayland_hook::set_fullscreen(false);
         set_attrib(glfw_win, GLFW_DECORATED, 1);
 
         if let Some((x, y, w, h)) = SAVED_WINDOW_GEOM.lock().unwrap().take() {
