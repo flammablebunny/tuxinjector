@@ -6,10 +6,11 @@
 //   2. wpstateout.txt      (State Output - backup)
 // A source must be *live*, not merely present: a disabled/crashed mod leaves a
 // stale file behind (Hermes a frozen hermes/alive heartbeat, State Output a
-// days-old wpstateout.txt), and we treat that as no source. If no live source
-// exists we warn once (stderr + GUI), since state-conditioned hotkeys and
-// state-based features can't work without one. Liveness is re-checked every
-// tick, so losing the mod mid-session re-warns.
+// days-old wpstateout.txt), and we treat that as no source. The GUI status
+// reflects this live/missing state every tick. The stderr warning, though,
+// only fires once, and only if NO live source ever shows up within MOD_WARN_GRACE
+// of load -- otherwise we'd nag on every launch (and every trip back to the menu)
+// while the JVM + mod are still coming up, even when the mod IS installed.
 //
 // NOTE: "Using wpstateout.txt (State Output and previously WorldPreview),
 // state.json (Hermes), record.json (SpeedRunIGT), or other mod-outputted
@@ -29,6 +30,11 @@ const POLL_MS: Duration = Duration::from_millis(50);
 // Hermes rewrites hermes/alive ~1x/sec; more than this without a refresh means
 // it's disabled/crashed/removed.
 const HERMES_STALE_MS: i128 = 3000;
+
+// Grace period before we'll warn that no state mod is present. The JVM + mod
+// take a while to load and start writing/heartbeating, so a missing source
+// during the first minute is just "still starting up", not "not installed".
+const MOD_WARN_GRACE: Duration = Duration::from_secs(60);
 
 // Captured at process load (start of `spawn_state_watcher`, in the LD_PRELOAD
 // ctor) so State Output liveness can mean "written since we loaded" - see
@@ -166,12 +172,15 @@ pub fn spawn_state_watcher() {
 fn watcher_loop() {
     let mut last_state = String::new();
     let mut logged_label: Option<&'static str> = None;
-    let mut warned_missing = false;
+    // Seeing a live source even once proves the mod is there, so we never warn.
+    // We only warn (once) if nothing ever showed up within the startup grace.
+    let mut ever_seen = false;
+    let mut warned = false;
 
     loop {
         match find_live_source() {
             Some(s) => {
-                warned_missing = false;
+                ever_seen = true;
                 let (label, status) = match s {
                     StateSource::Hermes(_) => ("hermes/state.json", StateModStatus::Hermes),
                     StateSource::WpStateOut(_) => {
@@ -213,8 +222,14 @@ fn watcher_loop() {
             None => {
                 logged_label = None;
                 tuxinjector_gui::set_state_mod_status(StateModStatus::Missing);
-                if !warned_missing {
-                    warned_missing = true;
+                // Only nag if a source never appeared and the grace period has
+                // passed -- skips the normal JVM/mod-load startup window.
+                let waited = LOAD_TIME
+                    .get()
+                    .and_then(|t| t.elapsed().ok())
+                    .unwrap_or(Duration::ZERO);
+                if !ever_seen && !warned && waited >= MOD_WARN_GRACE {
+                    warned = true;
                     eprintln!(
                         "tuxinjector: no live game-state mod detected - neither \
                          hermes/state.json (Hermes) nor wpstateout.txt (State \
