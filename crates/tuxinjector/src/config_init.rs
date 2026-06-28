@@ -104,6 +104,13 @@ pub fn init_config() -> Option<ConfigWatcher> {
     let tx = state::init_or_get();
     let snapshot = Arc::clone(&tx.config);
 
+    // hot_reload.rs lives in tuxinjector-config and can't reach our tux_log
+    // diff-logger directly (would be a circular dep), so hand it a function
+    // pointer to call at its publish site.
+    tuxinjector_config::hot_reload::set_hot_reload_logger(|old, new| {
+        crate::tux_log::log_config_change(old, new);
+    });
+
     let path = match find_config_path() {
         Some(p) => p,
         None => {
@@ -119,6 +126,7 @@ pub fn init_config() -> Option<ConfigWatcher> {
     };
 
     if let Some(dir) = path.parent() {
+        tracing::info!(config_dir = %dir.display(), config_path = %path.display(), "resolved config paths");
         let _ = tx.config_dir.set(dir.to_path_buf());
     }
 
@@ -155,6 +163,8 @@ pub fn init_config() -> Option<ConfigWatcher> {
         load_default(tx, &snapshot, &path);
         path.clone()
     };
+
+    tracing::info!(load_path = %load_path.display(), "active config file for hot-reload watcher");
 
     // watcher uses a Lua-delegating parser for hot-reload
     let parser: tuxinjector_config::ConfigParser = Box::new(|source: &str| {
@@ -233,6 +243,11 @@ fn boot_lua(
 
             crate::apply_log_filter(&cfg);
             crate::overlay_gen::generate_overlay(&cfg);
+
+            // record the loaded config's id (+ best-effort registry upload). We do
+            // NOT diff against defaults here -- the initial load isn't a "setting
+            // changed"; the diff logger is only for real runtime edits / reloads.
+            crate::tux_log::log_config_id(&cfg);
 
             snapshot.publish(cfg);
 

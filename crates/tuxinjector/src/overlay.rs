@@ -906,7 +906,7 @@ impl OverlayState {
                 if elapsed.as_secs() >= 1 {
                     let frames = FPS_FRAMES.swap(0, Ordering::Relaxed);
                     let fps = frames as f64 / elapsed.as_secs_f64();
-                    tracing::info!(fps = fps as u32, "FPS");
+                    tracing::debug!(fps = fps as u32, "FPS");
                     *start = Instant::now();
                 }
             }
@@ -1164,6 +1164,9 @@ impl OverlayState {
         );
         let prev = self.mode_system.current_mode_id().to_string();
         self.mode_system.switch_mode(mode_id, &cfg);
+        if prev != mode_id {
+            tracing::info!(from = %prev, to = %mode_id, "switch_mode");
+        }
         self.cached_probe = None; // mode dims are changing
 
         if let Some(ref mut r) = self.gl_renderer {

@@ -33,7 +33,10 @@ pub fn store_real_glfw_get_proc_address(ptr: *mut c_void) {
 pub unsafe extern "C" fn glfwGetProcAddress(name: *const c_char) -> *mut c_void {
     // log once to stderr so we know our hook is alive (before tracing is up)
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| eprintln!("[tuxinjector] glfwGetProcAddress hooked"));
+    ONCE.call_once(|| {
+        eprintln!("[tuxinjector] glfwGetProcAddress hooked");
+        tracing::info!("glfw PLT hook live: glfwGetProcAddress called (game resolving GL via GLFW)");
+    });
     let real = REAL_GLFW_GET_PROC_ADDRESS.get_or_init(|| {
         let ptr = libc::dlsym(
             libc::RTLD_NEXT,
@@ -62,55 +65,64 @@ pub unsafe extern "C" fn glfwGetProcAddress(name: *const c_char) -> *mut c_void 
         b"glViewport" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_viewport(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glViewport): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glViewport (inline)"));
             viewport_hook::glViewport as *mut c_void
         }
         b"glScissor" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_scissor(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glScissor): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glScissor (inline)"));
             viewport_hook::glScissor as *mut c_void
         }
         b"glBindFramebuffer" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_bind_framebuffer(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glBindFramebuffer): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glBindFramebuffer (inline)"));
             viewport_hook::glBindFramebuffer as *mut c_void
         }
         b"glBindFramebufferEXT" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_bind_framebuffer_ext(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glBindFramebufferEXT): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glBindFramebufferEXT (inline)"));
             viewport_hook::glBindFramebufferEXT as *mut c_void
         }
         b"glBindFramebufferARB" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_bind_framebuffer_arb(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glBindFramebufferARB): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glBindFramebufferARB (inline)"));
             viewport_hook::glBindFramebufferARB as *mut c_void
         }
         b"glDrawBuffer" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_draw_buffer(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glDrawBuffer): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glDrawBuffer (inline)"));
             viewport_hook::glDrawBuffer as *mut c_void
         }
         b"glReadBuffer" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_read_buffer(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glReadBuffer): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glReadBuffer (inline)"));
             viewport_hook::glReadBuffer as *mut c_void
         }
         b"glDrawBuffers" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_draw_buffers(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glDrawBuffers): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glDrawBuffers (inline)"));
             viewport_hook::glDrawBuffers as *mut c_void
         }
         b"glBlitFramebuffer" => {
             let real_ptr = real(name);
             if !real_ptr.is_null() { viewport_hook::store_real_gl_blit_framebuffer(real_ptr); }
-            tracing::info!(?real_ptr, "glfwGetProcAddress(glBlitFramebuffer): returning hook");
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(?real_ptr, "glfwGetProcAddress: hooked glBlitFramebuffer (inline)"));
             viewport_hook::glBlitFramebuffer as *mut c_void
         }
         _ => real(name),

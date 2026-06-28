@@ -353,6 +353,10 @@ impl GuiRenderer {
         if let Some(out) = app_out {
             // --- normal save: write to the CORRECT file for the active profile ---
             if let Some(new_cfg) = out.saved_config {
+                // snapshot the live config BEFORE publishing so the diff logger
+                // records exactly which settings this GUI save changed
+                let old = (**self.config.load()).clone();
+                crate::tux_log::log_config_change(&old, &new_cfg);
                 self.config.publish(new_cfg.clone());
                 crate::overlay_gen::generate_overlay(&new_cfg);
                 if let Some(dir) = state::get().config_dir.get() {

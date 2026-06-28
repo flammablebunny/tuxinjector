@@ -28,6 +28,7 @@ mod state;
 mod state_watcher;
 mod swap_hook;
 mod text_rasterizer;
+mod tux_log;
 #[allow(dead_code)]
 mod virtual_fb;
 mod viewport_hook;
@@ -45,7 +46,6 @@ use std::sync::Mutex;
 
 use ctor::{ctor, dtor};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::prelude::*;
 
 // needs to outlive everything or hot-reload breaks
 static CONFIG_WATCHER: Mutex<Option<tuxinjector_config::ConfigWatcher>> = Mutex::new(None);
@@ -61,18 +61,23 @@ pub(crate) fn data_subpath() -> &'static str {
 // handle for swapping the tracing filter at runtime from the debug tab
 static LOG_FILTER_UPDATER: OnceLock<Box<dyn Fn(EnvFilter) + Send + Sync>> = OnceLock::new();
 
-// Rebuild tracing filter based on which debug checkboxes are ticked.
-// Each checkbox gates debug logging for a specific subsystem.
+// Rebuild the STDERR tracing filter based on which debug checkboxes are ticked.
+// Each checkbox gates debug logging for a specific subsystem. Baseline is warn+
+// so routine info logging stays in the dedicated file log (see tux_log) instead
+// of bleeding into the game's stderr / the Minecraft launcher log; the file
+// layer has its own fixed info filter and is unaffected by this.
 pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
     let Some(update) = LOG_FILTER_UPDATER.get() else { return };
 
     let d = &cfg.advanced.debug;
 
     let mut parts: Vec<&str> = vec![
-        "tuxinjector=info",
-        "tuxinjector_config=info",
-        "tuxinjector_gl_interop=info",
-        "tuxinjector_render=info",
+        "tuxinjector=warn",
+        "tuxinjector_config=warn",
+        "tuxinjector_gl_interop=warn",
+        "tuxinjector_render=warn",
+        // config code is always surfaced on stderr (Minecraft log)
+        "tuxinjector::config_code=info",
     ];
 
     if d.log_mode_switch {
@@ -125,10 +130,18 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
 
 #[ctor]
 fn init() {
+    // Bring up the dedicated support log + tracing subscriber FIRST, before
+    // liblogger, so liblogger's own initialisation is captured in latest.log.
+    // tux_log owns the reloadable stderr filter; it hands back the reload
+    // closure that apply_log_filter() uses to hot-swap debug levels at runtime.
+    let updater = tux_log::init();
+    LOG_FILTER_UPDATER.get_or_init(|| updater);
+
     /// Load liblogger before anything else.
     /// To fully disable liblogger, delete this folowing single line. (Doing so makes any
     /// subsequent run / match ILLEGAL on speedrun.com / MCSR Ranked.)
     liblogger::load();
+    tracing::info!("liblogger initialised");
 
     // clear the preload env var so child processes don't get us injected too
     unsafe {
@@ -137,24 +150,6 @@ fn init() {
         #[cfg(target_os = "macos")]
         libc::unsetenv(b"DYLD_INSERT_LIBRARIES\0".as_ptr() as *const libc::c_char);
     }
-
-    // reloadable filter - we flip debug logging from the GUI at runtime
-    let initial = EnvFilter::from_default_env()
-        .add_directive("tuxinjector=info".parse().unwrap());
-
-    let (filter_layer, reload_handle) = tracing_subscriber::reload::Layer::new(initial);
-
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(tracing_subscriber::fmt::layer().with_target(false))
-        .init();
-
-    // stash the reload closure so we can hot-swap filters later
-    LOG_FILTER_UPDATER.get_or_init(|| {
-        Box::new(move |f: EnvFilter| {
-            let _ = reload_handle.reload(f);
-        })
-    });
 
     #[cfg(target_os = "linux")]
     tracing::info!("tuxinjector: loaded via LD_PRELOAD");
@@ -165,14 +160,21 @@ fn init() {
     if let Ok(mut guard) = CONFIG_WATCHER.lock() {
         *guard = watcher;
     }
+    tracing::info!("config loaded");
 
     // watches wpstateout.txt for game state changes
     state_watcher::spawn_state_watcher();
+    tracing::info!("state watcher spawned");
 
     // background-check GitHub for a newer tuxinjector build. Staged on disk and
     // applied on next launch (or via the GUI's "Restart Now") -- never forced.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    tuxinjector_gui::spawn_update_check(env!("CARGO_PKG_VERSION"));
+    {
+        tuxinjector_gui::spawn_update_check(env!("CARGO_PKG_VERSION"));
+        tracing::info!("update check spawned");
+    }
+
+    tracing::info!("tuxinjector init complete");
 }
 
 #[dtor]
@@ -181,6 +183,11 @@ fn on_unload() {
     // perf-stats, lua runtime) block on I/O or sleep loops. Rust statics
     // don't drop on exit, so these threads never get a stop signal.
     // _exit() kills all threads immediately.
+
+    // Rotate the live latest.log to a timestamped archive before we tear down.
+    // Safe to call once; nothing writes the log after this.
+    tux_log::rotate_on_shutdown();
+
     #[cfg(target_os = "linux")]
     unsafe { libc::_exit(0); }
 }

@@ -95,6 +95,7 @@ unsafe fn wl_lib() -> *mut c_void {
         // refcount on a lib the game keeps mapped anyway, and it keeps our
         // cached fn pointers valid.
         WL_HANDLE.store(lib, Ordering::Release);
+        tracing::info!(handle = ?lib, "[WL] resolved libwayland-client handle");
     }
     lib
 }
@@ -228,7 +229,10 @@ pub unsafe extern "C" fn wl_proxy_marshal_array_flags(
     args: *mut c_void,
 ) -> *mut c_void {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| eprintln!("[tuxinjector] wl_proxy_marshal_array_flags hooked"));
+    ONCE.call_once(|| {
+        eprintln!("[tuxinjector] wl_proxy_marshal_array_flags hooked");
+        tracing::info!("[WL] wl_proxy_marshal_array_flags interposer active");
+    });
 
     // If we can't resolve the real symbol we've already interposed and cannot
     // transparently forward -- but this only happens if libwayland-client isn't

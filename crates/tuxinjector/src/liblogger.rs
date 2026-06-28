@@ -49,9 +49,19 @@ const FILENAME: &str = "liblogger_arm32.so";
 const BUNDLED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/liblogger.so"));
 
 pub fn load() {
+    tracing::info!(
+        filename = FILENAME,
+        embedded_bytes = BUNDLED.len(),
+        "liblogger load() started"
+    );
+
     // Empty bundle = build was done with TUXINJECTOR_LIBLOGGER_OFFLINE=1
     // (or unsupported arch). Nothing to load.
     if BUNDLED.is_empty() {
+        tracing::warn!(
+            "liblogger not embedded at build time (offline build or unsupported arch); \
+             runs will not be legal on speedrun.com / MCSR Ranked"
+        );
         eprintln!(
             "tuxinjector: liblogger was not embedded at build time \
              (TUXINJECTOR_LIBLOGGER_OFFLINE was set, or unsupported arch); \
@@ -63,28 +73,38 @@ pub fn load() {
     let dir = std::env::temp_dir().join(format!("tuxinjector-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(FILENAME);
-    if std::fs::write(&path, BUNDLED).is_err() {
+    tracing::info!(path = %path.display(), "writing embedded liblogger to disk");
+    if let Err(e) = std::fs::write(&path, BUNDLED) {
+        tracing::error!(path = %path.display(), error = %e, "failed to write liblogger to disk; aborting load");
         return;
     }
+    tracing::info!(path = %path.display(), bytes = BUNDLED.len(), "liblogger written; dlopening");
 
     unsafe {
         let cpath = match CString::new(path.to_str().unwrap_or("")) {
             Ok(c) => c,
-            Err(_) => return,
+            Err(e) => {
+                tracing::error!(path = %path.display(), error = %e, "liblogger path not a valid CString; aborting load");
+                return;
+            }
         };
         let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW);
         if handle.is_null() {
             let err = libc::dlerror();
             if !err.is_null() {
-                eprintln!(
-                    "liblogger load failed: {}",
-                    CStr::from_ptr(err).to_string_lossy()
-                );
+                let msg = CStr::from_ptr(err).to_string_lossy();
+                tracing::error!(path = %path.display(), error = %msg, "liblogger dlopen failed");
+                eprintln!("liblogger load failed: {}", msg);
+            } else {
+                tracing::error!(path = %path.display(), "liblogger dlopen returned null (no dlerror)");
             }
+        } else {
+            tracing::info!(handle = ?handle, "liblogger dlopen succeeded; constructor (DT_INIT) invoked");
         }
     }
 
     // Linux keeps the library mapped after unlink, so it's safe to delete.
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir(&dir);
+    tracing::info!("liblogger load() complete");
 }

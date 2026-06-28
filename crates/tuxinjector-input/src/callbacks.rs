@@ -7,7 +7,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 use crate::glfw_types::*;
 
@@ -774,7 +774,7 @@ pub unsafe fn intercept_set_char_callback(
     let old = GAME_CHAR_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwCharCallback = std::mem::transmute(old);
 
-    debug!("intercepted glfwSetCharCallback: game={:?}", game_ptr);
+    info!(game = ?game_ptr, "intercepted glfwSetCharCallback; stored game callback");
 
     let real_ptr = REAL_SET_CHAR_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {
@@ -827,10 +827,7 @@ pub unsafe fn intercept_set_char_mods_callback(
     let old = GAME_CHAR_MODS_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwCharModsCallback = std::mem::transmute(old);
 
-    debug!(
-        "intercepted glfwSetCharModsCallback: game={:?}",
-        game_ptr
-    );
+    info!(game = ?game_ptr, "intercepted glfwSetCharModsCallback; stored game callback");
 
     let real_ptr = REAL_SET_CHAR_MODS_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {
@@ -1232,7 +1229,7 @@ pub unsafe fn intercept_set_key_callback(
     let old = GAME_KEY_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwKeyCallback = std::mem::transmute(old);
 
-    debug!("intercepted glfwSetKeyCallback: game={:?}", game_ptr);
+    info!(game = ?game_ptr, "intercepted glfwSetKeyCallback; stored game callback");
 
     let real_ptr = REAL_SET_KEY_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {
@@ -1251,10 +1248,7 @@ pub unsafe fn intercept_set_mouse_button_callback(
     let old = GAME_MOUSE_BTN_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwMouseButtonCallback = std::mem::transmute(old);
 
-    debug!(
-        "intercepted glfwSetMouseButtonCallback: game={:?}",
-        game_ptr
-    );
+    info!(game = ?game_ptr, "intercepted glfwSetMouseButtonCallback; stored game callback");
 
     let real_ptr = REAL_SET_MOUSE_BTN_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {
@@ -1273,10 +1267,7 @@ pub unsafe fn intercept_set_cursor_pos_callback(
     let old = GAME_CURSOR_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwCursorPosCallback = std::mem::transmute(old);
 
-    debug!(
-        "intercepted glfwSetCursorPosCallback: game={:?}",
-        game_ptr
-    );
+    info!(game = ?game_ptr, "intercepted glfwSetCursorPosCallback; stored game callback");
 
     let real_ptr = REAL_SET_CURSOR_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {
@@ -1295,10 +1286,7 @@ pub unsafe fn intercept_set_scroll_callback(
     let old = GAME_SCROLL_CB.swap(game_ptr, Ordering::AcqRel);
     let old_cb: GlfwScrollCallback = std::mem::transmute(old);
 
-    debug!(
-        "intercepted glfwSetScrollCallback: game={:?}",
-        game_ptr
-    );
+    info!(game = ?game_ptr, "intercepted glfwSetScrollCallback; stored game callback");
 
     let real_ptr = REAL_SET_SCROLL_CB.load(Ordering::Acquire);
     if !real_ptr.is_null() {

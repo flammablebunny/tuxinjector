@@ -825,6 +825,13 @@ unsafe fn render_overlay() {
         if ow > 0 && oh > 0 { (ow, oh) } else { return; }
     };
 
+    // first present only -- per-frame present stays at debug/trace elsewhere.
+    static FIRST_PRESENT: std::sync::Once = std::sync::Once::new();
+    FIRST_PRESENT.call_once(|| {
+        let (mw, mh) = crate::viewport_hook::get_mode_size();
+        tracing::info!(width = w, height = h, mode_w = mw, mode_h = mh, "first present");
+    });
+
     if let Some(lock) = tx.overlay.get() {
         if let Ok(mut overlay) = lock.lock() {
             if let Some(gl) = tx.gl.get() {
@@ -930,12 +937,14 @@ unsafe fn render_overlay() {
 #[cfg(target_os = "linux")]
 pub fn store_real_egl_swap(ptr: *mut c_void) {
     REAL_EGL_SWAP.store(ptr, Ordering::Release);
+    tracing::info!(real = ?ptr, "eglSwapBuffers hook installed");
     resolve_original_egl_swap();
 }
 
 #[cfg(target_os = "linux")]
 pub fn store_real_glx_swap(ptr: *mut c_void) {
     REAL_GLX_SWAP.store(ptr, Ordering::Release);
+    tracing::info!(real = ?ptr, "glXSwapBuffers hook installed");
     resolve_original_glx_swap();
 }
 
@@ -954,11 +963,11 @@ fn resolve_original_egl_swap() {
 
         if !ptr.is_null() {
             ORIGINAL_EGL_SWAP.store(ptr, Ordering::Release);
-            tracing::debug!("resolved original eglSwapBuffers from {:?}", std::str::from_utf8(&lib[..lib.len()-1]));
+            tracing::info!(addr = ?ptr, lib = ?std::str::from_utf8(&lib[..lib.len()-1]), "resolved original eglSwapBuffers");
             return;
         }
     }
-    tracing::debug!("couldn't resolve original eglSwapBuffers from lib, using RTLD_NEXT pointer");
+    tracing::info!("couldn't resolve original eglSwapBuffers from lib, using RTLD_NEXT pointer");
 }
 
 #[cfg(target_os = "linux")]
@@ -981,11 +990,11 @@ fn resolve_original_glx_swap() {
 
         if !ptr.is_null() {
             ORIGINAL_GLX_SWAP.store(ptr, Ordering::Release);
-            tracing::debug!("resolved original glXSwapBuffers from {:?}", std::str::from_utf8(&lib[..lib.len()-1]));
+            tracing::info!(addr = ?ptr, lib = ?std::str::from_utf8(&lib[..lib.len()-1]), "resolved original glXSwapBuffers");
             return;
         }
     }
-    tracing::debug!("couldn't resolve original glXSwapBuffers from lib, using RTLD_NEXT pointer");
+    tracing::info!("couldn't resolve original glXSwapBuffers from lib, using RTLD_NEXT pointer");
 }
 
 // -- macOS: stash the real CGL ptr --

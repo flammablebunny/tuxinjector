@@ -6,7 +6,7 @@
 // file to re-read on change.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -18,6 +18,19 @@ use crate::types::Config;
 // 100ms debounce - vim/neovim do atomic rename-writes which
 // fire multiple events back to back
 const DEBOUNCE: Duration = Duration::from_millis(100);
+
+// Settings-diff logger hook. The diff-logging infra lives in the `tuxinjector`
+// crate (which depends on us, so we can't reference it directly). The host
+// installs a function pointer at startup; we call it at the publish site so
+// every hot-reload records exactly which settings changed.
+type ConfigDiffLogger = fn(old: &Config, new: &Config);
+static DIFF_LOGGER: OnceLock<ConfigDiffLogger> = OnceLock::new();
+
+/// Install the settings-diff logger called whenever a hot-reload publishes a
+/// new config. No-op if called more than once.
+pub fn set_hot_reload_logger(f: ConfigDiffLogger) {
+    let _ = DIFF_LOGGER.set(f);
+}
 
 // Takes config source text, returns parsed Config (or error string).
 pub type ConfigParser = Box<dyn Fn(&str) -> Result<Config, String> + Send>;
@@ -151,7 +164,13 @@ impl ConfigWatcher {
                     match std::fs::read_to_string(&active_path) {
                         Ok(src) => match parser(&src) {
                             Ok(cfg) => {
-                                info!("Config reloaded from {}", active_path.display());
+                                info!(path = %active_path.display(), "config hot-reloaded");
+                                // diff old vs new BEFORE publishing so we log
+                                // exactly which settings the reload changed
+                                if let Some(log) = DIFF_LOGGER.get() {
+                                    let old = (**snap.load()).clone();
+                                    log(&old, &cfg);
+                                }
                                 snap.publish(cfg);
                             }
                             Err(e) => error!("Failed to parse config: {e}"),

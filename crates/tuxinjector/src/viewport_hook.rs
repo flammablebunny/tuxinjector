@@ -1252,6 +1252,8 @@ unsafe fn bind_fb_with(real: GlBindFramebufferFn, target: c_uint, fb: c_uint) {
 pub unsafe fn install_glviewport_inline_hook() {
     if REAL_GL_VIEWPORT_COPY.get().is_some() { return; }
 
+    tracing::info!("installing glViewport inline hook");
+
     let hook_self = hooked_gl_viewport as *const () as usize;
 
     let from_egl: *mut u8 = REAL_GL_VIEWPORT
@@ -1360,6 +1362,8 @@ pub unsafe fn install_glviewport_inline_hook() {
 #[cfg(target_os = "linux")]
 pub unsafe fn install_glbindframebuffer_inline_hook() {
     if REAL_GL_BIND_FRAMEBUFFER_COPY.get().is_some() { return; }
+
+    tracing::info!("installing glBindFramebuffer inline hook");
 
     let hook_self = glBindFramebuffer as *const () as usize;
     let from_scan: *mut u8 = resolve_gl_sym(b"glBindFramebuffer\0", hook_self);

@@ -43,14 +43,19 @@ pub fn store_glfw_get_proc_address(ptr: *mut c_void) {
 
 // try EGL first, then GLX (Linux), then GLFW GPA (macOS)
 pub fn get_proc_address_fn() -> Option<EglGetProcAddressFn> {
+    // This is called once per GL symbol the game resolves (hundreds of times),
+    // so log the chosen source exactly once -- not on every lookup.
+    static LOGGED: std::sync::Once = std::sync::Once::new();
     #[cfg(target_os = "linux")]
     {
         let egl = EGL_GET_PROC_ADDRESS.load(Ordering::Acquire);
         if !egl.is_null() {
+            LOGGED.call_once(|| tracing::info!(source = "eglGetProcAddress", addr = ?egl, "gl proc-address resolver selected"));
             return Some(unsafe { std::mem::transmute(egl) });
         }
         let glx = GLX_GET_PROC_ADDRESS.load(Ordering::Acquire);
         if !glx.is_null() {
+            LOGGED.call_once(|| tracing::info!(source = "glXGetProcAddressARB", addr = ?glx, "gl proc-address resolver selected"));
             return Some(unsafe { std::mem::transmute(glx) });
         }
     }
@@ -58,6 +63,7 @@ pub fn get_proc_address_fn() -> Option<EglGetProcAddressFn> {
     {
         let glfw = GLFW_GET_PROC_ADDRESS.load(Ordering::Acquire);
         if !glfw.is_null() {
+            LOGGED.call_once(|| tracing::info!(source = "glfwGetProcAddress", addr = ?glfw, "gl proc-address resolver selected"));
             return Some(unsafe { std::mem::transmute(glfw) });
         }
     }
@@ -306,7 +312,8 @@ impl GlFunctions {
     // → Core functions: panic on failure.
     // → Extension functions: return None on failure.
     pub unsafe fn resolve(gpa: EglGetProcAddressFn) -> Self {
-        GlFunctions {
+        tracing::info!("resolving gl function pointers");
+        let fns = GlFunctions {
             gen_textures:      resolve!(required gpa, "glGenTextures"),
             bind_texture:      resolve!(required gpa, "glBindTexture"),
             delete_textures:   resolve!(required gpa, "glDeleteTextures"),
@@ -387,6 +394,24 @@ impl GlFunctions {
             import_semaphore_fd_ext:   resolve!(optional gpa, "glImportSemaphoreFdEXT"),
             wait_semaphore_ext:        resolve!(optional gpa, "glWaitSemaphoreEXT"),
             signal_semaphore_ext:      resolve!(optional gpa, "glSignalSemaphoreEXT"),
-        }
+        };
+
+        // log a representative set of resolved addresses ONCE so the support
+        // log captures the entry points we hook/use without flooding.
+        tracing::info!(
+            gen_textures = ?(fns.gen_textures as *const c_void),
+            bind_texture = ?(fns.bind_texture as *const c_void),
+            tex_image_2d = ?(fns.tex_image_2d as *const c_void),
+            viewport = ?(fns.viewport as *const c_void),
+            bind_framebuffer = ?(fns.bind_framebuffer as *const c_void),
+            blit_framebuffer = ?(fns.blit_framebuffer as *const c_void),
+            get_string = ?(fns.get_string as *const c_void),
+            use_program = ?(fns.use_program as *const c_void),
+            memory_object_ext = fns.create_memory_objects_ext.is_some(),
+            semaphore_ext = fns.create_semaphores_ext.is_some(),
+            "gl function pointers resolved"
+        );
+
+        fns
     }
 }

@@ -208,6 +208,7 @@ pub struct ModeSystem {
 
 impl ModeSystem {
     pub fn new(default_mode: &str) -> Self {
+        tracing::info!(default_mode, "mode system initialized");
         Self {
             cur_mode: default_mode.to_string(),
             initial_mode: default_mode.to_string(),
@@ -285,6 +286,8 @@ impl ModeSystem {
 
         let (to_w, to_h) = self.resolve_dimensions(target);
         let from_mode = self.effective_mode_id().to_string();
+
+        tracing::info!(from = %from_mode, to = %target_id, "mode change");
 
         let is_bounce = !config.display.disable_animations
             && matches!(

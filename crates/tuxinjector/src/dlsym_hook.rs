@@ -6,6 +6,16 @@ use std::sync::OnceLock;
 
 extern crate libc;
 
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
+
+// de-dupe set for dlopen targets we've already reported, so repeat loads
+// drop to debug instead of flooding the info-level support log.
+#[cfg(target_os = "linux")]
+static SEEN_DLOPEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
 use crate::gl_resolve;
 use crate::glfw_hook;
 use crate::swap_hook;
@@ -114,11 +124,52 @@ static REAL_DLOPEN: OnceLock<DlopenFn> = OnceLock::new();
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut c_void {
+    static ACTIVE: std::sync::Once = std::sync::Once::new();
+    ACTIVE.call_once(|| tracing::info!("dlopen interpose active (LD_PRELOAD shadowing real dlopen)"));
+
     let real = REAL_DLOPEN.get_or_init(|| {
         let ptr = real_dlsym()(RTLD_NEXT, b"dlopen\0".as_ptr() as *const c_char);
         assert!(!ptr.is_null(), "tuxinjector: can't resolve real dlopen");
         std::mem::transmute(ptr)
     });
+
+    // Report notable targets the game loads -- first-seen at info, repeats at
+    // debug (de-duped via SEEN_DLOPEN) since dlopen fires constantly and would
+    // otherwise flood the support log. Also remember GL/GLX/vendor libs so we can
+    // log their dlopen RESULT below (diagnosing GLX FBConfig failures).
+    let mut gl_lib: Option<String> = None;
+    if !path.is_null() {
+        if let Ok(p) = std::ffi::CStr::from_ptr(path).to_str() {
+            let lower = p.to_ascii_lowercase();
+            let interesting = [
+                "libgl", "libegl", "libglx", "libopengl", "libglfw",
+                "libwayland", "libx11", "libxcb", "libxrandr",
+                "freetype", "libvulkan", "swrast", "iris", "radeonsi",
+                "nvidia", "zink",
+            ]
+            .iter()
+            .find(|kw| lower.contains(**kw))
+            .copied();
+
+            if let Some(kw) = interesting {
+                let seen = SEEN_DLOPEN.get_or_init(|| Mutex::new(HashSet::new()));
+                let first = seen.lock().map(|mut s| s.insert(p.to_string())).unwrap_or(true);
+                if first {
+                    tracing::info!(target_lib = %p, matched = kw, "game dlopen (first-seen)");
+                } else {
+                    tracing::debug!(target_lib = %p, "game dlopen (repeat)");
+                }
+            }
+
+            // GL / GLX / EGL / GPU-vendor libs -- track so we can log the result.
+            let is_gl = ["libgl", "libegl", "libglx", "libopengl", "swrast",
+                         "iris", "radeonsi", "nvidia", "zink"]
+                .iter().any(|kw| lower.contains(kw));
+            if is_gl {
+                gl_lib = Some(p.to_string());
+            }
+        }
+    }
 
     // LWJGL3 dlopens its bundled native libs with RTLD_DEEPBIND to keep them
     // isolated. We strip it so LWJGL's GL/GLFW libs resolve our #[no_mangle]
@@ -127,22 +178,42 @@ pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut
     // fontmanager loads, so on shutdown MC frees an LWJGL-created FT_Library with
     // the wrong freetype and segfaults (FreeTypeUtil.destroy -> FT_Done_Library).
     // We don't hook freetype, so leave its isolation alone.
-    #[cfg(target_os = "linux")]
-    let clean = {
-        let isolate = !path.is_null()
-            && std::ffi::CStr::from_ptr(path).to_bytes().windows(8).any(|w| w == b"freetype");
-        if isolate {
-            flags
-        } else {
-            let c = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
-            if c != flags { tracing::debug!("dlopen: stripped RTLD_DEEPBIND"); }
-            c
-        }
+    let isolate = !path.is_null()
+        && std::ffi::CStr::from_ptr(path).to_bytes().windows(8).any(|w| w == b"freetype");
+    let (clean, deepbind_stripped) = if isolate {
+        (flags, false)
+    } else {
+        let c = flags & !(libc::RTLD_DEEPBIND as libc::c_int);
+        let stripped = c != flags;
+        if stripped { tracing::debug!("dlopen: stripped RTLD_DEEPBIND"); }
+        (c, stripped)
     };
-    #[cfg(target_os = "macos")]
-    let clean = flags;
 
-    real(path, clean)
+    let handle = real(path, clean);
+
+    // Support diagnostic (tux log file): the dlopen RESULT for every GL/GLX/vendor
+    // lib, plus dlerror() on failure. libglvnd (libGLX.so) loading ok=true while
+    // its Mesa vendor (libGLX_mesa.so) returns ok=false is the "Failed to find a
+    // suitable GLXFBConfig" signature -- and the dlerror string says WHY (e.g. a
+    // glibc-version mismatch from a stale RUNPATH, an undefined symbol, etc.).
+    if let Some(lib) = gl_lib {
+        let ok = !handle.is_null();
+        // dlerror() must be read immediately after the failing call; only do so on
+        // failure so we don't disturb the success path's error state.
+        let err = if ok {
+            String::new()
+        } else {
+            let e = libc::dlerror();
+            if e.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(e).to_string_lossy().into_owned()
+            }
+        };
+        tracing::info!(lib = %lib, ok, deepbind_stripped, error = %err, "GL/GLX dlopen");
+    }
+
+    handle
 }
 
 // --- the big dlsym hook ---
@@ -150,6 +221,14 @@ pub unsafe extern "C" fn dlopen(path: *const c_char, flags: libc::c_int) -> *mut
 // macOS: __DATA,__interpose makes dyld redirect calls from all images
 
 unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+    static ACTIVE: std::sync::Once = std::sync::Once::new();
+    ACTIVE.call_once(|| {
+        #[cfg(target_os = "linux")]
+        tracing::info!("dlsym interpose active (LD_PRELOAD shadows dlsym; GL/GLFW lookups routed here)");
+        #[cfg(target_os = "macos")]
+        tracing::info!("dlsym interpose active (__DATA,__interpose routes all dlsym calls here)");
+    });
+
     if symbol.is_null() {
         return real_dlsym()(handle, symbol);
     }
@@ -162,6 +241,9 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
         ($store:expr, $replacement:expr) => {{
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() { $store(real_ptr); }
+            // first-seen note for each symbol we replace via the dlsym interpose
+            static O: std::sync::Once = std::sync::Once::new();
+            O.call_once(|| tracing::info!(symbol = %name.to_string_lossy(), "hooked via dlsym interpose"));
             $replacement as *mut c_void
         }};
     }
@@ -173,7 +255,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 gl_resolve::store_egl_get_proc_address(real_ptr);
-                tracing::info!("hooked eglGetProcAddress");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked eglGetProcAddress via dlsym interpose"));
             }
             hooked_egl_get_proc_address as *mut c_void
         }
@@ -191,7 +274,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
                     tracing::debug!("got eglGetProcAddress (fallback via eglSwapBuffers hook)");
                 }
 
-                tracing::info!("hooked eglSwapBuffers");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked eglSwapBuffers via dlsym interpose"));
             }
             swap_hook::hooked_egl_swap_buffers as *mut c_void
         }
@@ -212,7 +296,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             }
             if !real_ptr.is_null() {
                 gl_resolve::store_glx_get_proc_address(real_ptr);
-                tracing::info!("hooked glXGetProcAddressARB");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glXGetProcAddressARB via dlsym interpose"));
             } else {
                 tracing::warn!("glXGetProcAddressARB: could not resolve");
             }
@@ -232,7 +317,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
                     tracing::debug!("got glXGetProcAddressARB (fallback via glXSwapBuffers hook)");
                 }
 
-                tracing::info!("hooked glXSwapBuffers");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glXSwapBuffers via dlsym interpose"));
             }
             swap_hook::hooked_glx_swap_buffers as *mut c_void
         }
@@ -250,7 +336,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             if !real_ptr.is_null() {
                 swap_hook::store_real_glfw_swap(real_ptr);
                 eprintln!("[tuxinjector] hooked glfwSwapBuffers via dlsym interpose");
-                tracing::info!("hooked glfwSwapBuffers via dlsym interpose");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwSwapBuffers via dlsym interpose"));
             }
             swap_hook::hooked_glfw_swap_buffers as *mut c_void
         }
@@ -263,7 +350,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
                 // macOS: GLFW GPA is our main way to get GL fn ptrs
                 #[cfg(target_os = "macos")]
                 gl_resolve::store_glfw_get_proc_address(real_ptr);
-                tracing::info!("hooked glfwGetProcAddress");
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwGetProcAddress via dlsym interpose"));
             }
             glfw_hook::glfwGetProcAddress as *mut c_void
         }
@@ -300,6 +388,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 crate::glfw_hook::store_real_get_key(real_ptr);
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwGetKey via dlsym interpose"));
             } else {
                 tracing::warn!("glfwGetKey: real symbol not found");
             }
@@ -310,6 +400,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 crate::glfw_hook::store_real_get_key_scancode(real_ptr);
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwGetKeyScancode via dlsym interpose"));
             } else {
                 tracing::warn!("glfwGetKeyScancode: real symbol not found");
             }
@@ -319,6 +411,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 crate::glfw_hook::store_real_get_mouse_button(real_ptr);
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwGetMouseButton via dlsym interpose"));
             } else {
                 tracing::warn!("glfwGetMouseButton: real symbol not found");
             }
@@ -330,6 +424,8 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
             let real_ptr = real_dlsym()(handle, symbol);
             if !real_ptr.is_null() {
                 crate::glfw_hook::store_real_get_cursor_pos(real_ptr);
+                static O: std::sync::Once = std::sync::Once::new();
+                O.call_once(|| tracing::info!("hooked glfwGetCursorPos via dlsym interpose"));
             } else {
                 tracing::warn!("glfwGetCursorPos: real symbol not found");
             }
