@@ -913,15 +913,20 @@ struct SystemClipboard;
 
 impl imgui::ClipboardBackend for SystemClipboard {
     fn get(&mut self) -> Option<String> {
-        // try wayland first, then x11
-        std::process::Command::new("wl-paste")
-            .arg("--no-newline")
+        // This runs on the GL render thread (imgui calls it during paste), so a
+        // hung clipboard owner would freeze the whole game. Bound each tool with
+        // `timeout` (coreutils, ~universal on Linux) so a flaky clipboard can't
+        // lock up MC -- worst case the paste just no-ops. A working clipboard
+        // returns in milliseconds, so the 1s cap only shortens the bad case and
+        // never truncates a real paste. Try wayland then x11.
+        std::process::Command::new("timeout")
+            .args(["1", "wl-paste", "--no-newline"])
             .output()
             .ok()
             .filter(|o| o.status.success())
             .or_else(|| {
-                std::process::Command::new("xclip")
-                    .args(["-selection", "clipboard", "-o"])
+                std::process::Command::new("timeout")
+                    .args(["1", "xclip", "-selection", "clipboard", "-o"])
                     .output()
                     .ok()
                     .filter(|o| o.status.success())
