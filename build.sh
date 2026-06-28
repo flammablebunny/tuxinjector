@@ -76,6 +76,25 @@ elif [ "$OS" = "Linux" ]; then
     fi
 
     mv "$SRC" "$DST"
+
+    # Portability: the nix toolchain bakes a /nix/store glibc path into the .so's
+    # RUNPATH. When tux is LD_PRELOADed on another distro that happens to have nix
+    # installed (the store path exists), the loader uses that nix glibc -- which is
+    # often OLDER than the host's -- and it then shadows the host glibc for the
+    # whole process. The game's Mesa (built against the host glibc) then can't find
+    # its required GLIBC_x.yz symbols and libGLX_mesa fails to load ("Failed to
+    # find a suitable GLXFBConfig"). Strip the nix glibc entry so tux resolves
+    # libc/libm from the host. On NixOS the loader still finds nix glibc via its
+    # default search, so the dev's own runs are unaffected.
+    if command -v patchelf >/dev/null 2>&1; then
+        rpath="$(patchelf --print-rpath "$DST" 2>/dev/null || true)"
+        if printf '%s' "$rpath" | grep -qi glibc; then
+            new="$(printf '%s' "$rpath" | tr ':' '\n' | grep -vi glibc | paste -sd: -)"
+            patchelf --set-rpath "$new" "$DST" \
+                && echo ":: stripped nix glibc from RUNPATH (portable build)"
+        fi
+    fi
+
     echo ":: Built: $DST"
 
 else
