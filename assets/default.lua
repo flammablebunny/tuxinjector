@@ -14,14 +14,13 @@ local ti = require("tuxinjector")
 local mirrors = {
     {
         -- Pie chart from Shift+F3, displayed as circle. Passthrough keeps original RGB.
-        -- Capture region matches waywall's `tall_pie_all`: src = {44, 15978, 340, 178}
-        -- relative to pieLeft anchor in a 384×16384 tall viewport. Slightly
-        -- larger and shifted up-left vs the previous (319×169 at -238,-180)
-        -- to ensure the pie segment pixels land inside the capture rather
-        -- than just outside it in tall mode.
+        -- Capture region matches toolscreen's 'Pie' mirror exactly: 319×169 at
+        -- pieLeft (-238, -180) in the 384×16384 tall viewport, i.e. src =
+        -- {54, 15984, 319, 169}. Rendered via the "Preemptive Pie" group at
+        -- centerViewport + (360, 0), scaled 0.76×1.5 -> a 242×253 output box.
         name = "pieChart",
-        captureWidth = 340,
-        captureHeight = 178,
+        captureWidth = 319,
+        captureHeight = 169,
         colorPassthrough = true,
         colorSensitivity = 0.001,
         colors = {
@@ -37,8 +36,8 @@ local mirrors = {
             type = "Static",
             staticShape = "Circle",
             staticColor = {98, 5, 113},
-            staticThickness = 5,
-            staticRadius = 172,
+            staticThickness = 3,
+            staticRadius = 171,
             staticWidth = 238,
             staticHeight = 235,
             staticOffsetX = 1,
@@ -46,7 +45,7 @@ local mirrors = {
             dynamicThickness = 4,
         },
         input = {
-            { relativeTo = "pieLeft", x = -248, y = -186 },
+            { relativeTo = "pieLeft", x = -238, y = -180 },
         },
         output = {
             relativeTo = "centerViewport",
