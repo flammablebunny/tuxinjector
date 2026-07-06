@@ -1382,6 +1382,10 @@ pub struct KeyRebind {
     pub to_key_chat: u32,
     #[serde(default = "defaults::enabled_true")]
     pub enabled: bool,
+    // keyboard layer: "" = base, "shift"/"alt" = only while that modifier is
+    // held (an exact-layer match beats the base rebind for the same key)
+    #[serde(default)]
+    pub modifier: String,
 }
 
 impl Default for KeyRebind {
@@ -1391,6 +1395,7 @@ impl Default for KeyRebind {
             to_key: 0,
             to_key_chat: 0,
             enabled: true,
+            modifier: String::new(),
         }
     }
 }

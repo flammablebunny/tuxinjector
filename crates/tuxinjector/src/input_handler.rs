@@ -215,6 +215,12 @@ impl InputHandler for TuxinjectorInputHandler {
             crate::app_capture::push_app_key(key, scancode, mods, action == 1);
         }
 
+        // live shift/alt state drives the keyboard layers; when it changes,
+        // re-publish the active table so glfwGetKey polling stays in sync
+        if self.rebinder.set_mods(mods) {
+            tuxinjector_input::update_key_rebinds(&self.rebinder.active_rebinds());
+        }
+
         let orig = key;
         let remapped = self.rebinder.remap_key(key, scancode);
 
@@ -263,6 +269,10 @@ impl InputHandler for TuxinjectorInputHandler {
 
         self.maybe_reload();
         self.hotkeys.set_current_mode(&tuxinjector_lua::get_mode_name());
+
+        if self.rebinder.set_mods(mods) {
+            tuxinjector_input::update_key_rebinds(&self.rebinder.active_rebinds());
+        }
 
         let encoded = button + MOUSE_BUTTON_OFFSET;
         let mut remapped = self.rebinder.remap_key(encoded, 0);

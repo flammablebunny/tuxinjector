@@ -78,12 +78,40 @@ enum CaptureTarget {
     Chat,
 }
 
+// Which keyboard layer we're viewing/editing. Base always applies; Shift/Alt
+// only kick in while that modifier is held, and an exact layer wins over base.
+#[derive(Clone, Copy, PartialEq)]
+pub enum KbLayer {
+    Base,
+    Shift,
+    Alt,
+}
+
+impl KbLayer {
+    fn modifier(self) -> &'static str {
+        match self {
+            KbLayer::Base => "",
+            KbLayer::Shift => "shift",
+            KbLayer::Alt => "alt",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            KbLayer::Base => "Base",
+            KbLayer::Shift => "Shift",
+            KbLayer::Alt => "Alt",
+        }
+    }
+}
+
 pub struct KeyRebindsState {
     pub selected_key: Option<u32>,
     capturing: Option<CaptureTarget>,
     pub scale: f32,
     game_text: String,
     chat_text: String,
+    layer: KbLayer,
 }
 
 impl Default for KeyRebindsState {
@@ -94,6 +122,7 @@ impl Default for KeyRebindsState {
             scale: 1.2,
             game_text: String::new(),
             chat_text: String::new(),
+            layer: KbLayer::Base,
         }
     }
 }
@@ -108,40 +137,47 @@ impl KeyRebindsState {
     }
 }
 
-// -- Config helpers for rebind lookups --
+// -- Config helpers for rebind lookups (all scoped to the active layer) --
 
-fn find_rebind(config: &Config, from: u32) -> Option<&KeyRebind> {
+fn find_rebind<'a>(config: &'a Config, from: u32, layer: KbLayer) -> Option<&'a KeyRebind> {
     config
         .input.key_rebinds.rebinds
         .iter()
-        .find(|r| r.from_key == from && r.to_key != 0)
+        .find(|r| r.from_key == from && r.modifier == layer.modifier() && r.to_key != 0)
 }
 
-fn game_target(config: &Config, from: u32) -> Option<u32> {
-    find_rebind(config, from).map(|r| r.to_key)
+fn game_target(config: &Config, from: u32, layer: KbLayer) -> Option<u32> {
+    find_rebind(config, from, layer).map(|r| r.to_key)
 }
 
-fn chat_target(config: &Config, from: u32) -> Option<u32> {
-    find_rebind(config, from).map(|r| r.to_key_chat)
+fn chat_target(config: &Config, from: u32, layer: KbLayer) -> Option<u32> {
+    find_rebind(config, from, layer).map(|r| r.to_key_chat)
 }
 
-fn set_game(config: &mut Config, from: u32, to: u32) {
+fn find_mut<'a>(config: &'a mut Config, from: u32, layer: KbLayer) -> Option<&'a mut KeyRebind> {
+    config
+        .input.key_rebinds.rebinds
+        .iter_mut()
+        .find(|r| r.from_key == from && r.modifier == layer.modifier())
+}
+
+fn set_game(config: &mut Config, from: u32, to: u32, layer: KbLayer) {
     config.input.key_rebinds.enabled = true;
-    if let Some(r) = config.input.key_rebinds.rebinds.iter_mut().find(|r| r.from_key == from) {
+    if let Some(r) = find_mut(config, from, layer) {
         r.to_key = to;
         r.enabled = true;
     } else {
         config.input.key_rebinds.rebinds.push(KeyRebind {
             from_key: from, to_key: to,
             to_key_chat: 0, enabled: true,
-            ..KeyRebind::default()
+            modifier: layer.modifier().to_string(),
         });
     }
 }
 
-fn set_chat(config: &mut Config, from: u32, to_chat: u32) {
+fn set_chat(config: &mut Config, from: u32, to_chat: u32, layer: KbLayer) {
     config.input.key_rebinds.enabled = true;
-    if let Some(r) = config.input.key_rebinds.rebinds.iter_mut().find(|r| r.from_key == from) {
+    if let Some(r) = find_mut(config, from, layer) {
         r.to_key_chat = to_chat;
         r.enabled = true;
     } else {
@@ -149,22 +185,27 @@ fn set_chat(config: &mut Config, from: u32, to_chat: u32) {
         config.input.key_rebinds.rebinds.push(KeyRebind {
             from_key: from, to_key: to_chat,
             to_key_chat: to_chat, enabled: true,
-            ..KeyRebind::default()
+            modifier: layer.modifier().to_string(),
         });
     }
 }
 
-fn clear_rebinds(config: &mut Config, from: u32) {
-    config.input.key_rebinds.rebinds.retain(|r| r.from_key != from);
+fn clear_rebinds(config: &mut Config, from: u32, layer: KbLayer) {
+    config
+        .input.key_rebinds.rebinds
+        .retain(|r| !(r.from_key == from && r.modifier == layer.modifier()));
 }
 
-fn is_enabled(config: &Config, from: u32) -> bool {
-    config.input.key_rebinds.rebinds.iter().any(|r| r.from_key == from && r.enabled)
+fn is_enabled(config: &Config, from: u32, layer: KbLayer) -> bool {
+    config
+        .input.key_rebinds.rebinds
+        .iter()
+        .any(|r| r.from_key == from && r.modifier == layer.modifier() && r.enabled)
 }
 
-fn toggle_enabled(config: &mut Config, from: u32, on: bool) {
+fn toggle_enabled(config: &mut Config, from: u32, on: bool, layer: KbLayer) {
     for r in &mut config.input.key_rebinds.rebinds {
-        if r.from_key == from {
+        if r.from_key == from && r.modifier == layer.modifier() {
             r.enabled = on;
         }
     }
@@ -195,11 +236,11 @@ pub fn render(
             if let Some(target) = state.capturing {
                 match target {
                     CaptureTarget::Game => {
-                        set_game(config, sel, key);
+                        set_game(config, sel, key, state.layer);
                         state.game_text = keycode_to_name(key).to_string();
                     }
                     CaptureTarget::Chat => {
-                        set_chat(config, sel, key);
+                        set_chat(config, sel, key, state.layer);
                         state.chat_text = keycode_to_name(key).to_string();
                     }
                 }
@@ -210,6 +251,29 @@ pub fn render(
     }
 
     ui.separator(); ui.text("Keyboard Layout");
+
+    // Layer picker. Same story as above: Shift/Alt override base for the
+    // same key, but only while that modifier is actually down.
+    ui.text("Layer:");
+    for layer in [KbLayer::Base, KbLayer::Shift, KbLayer::Alt] {
+        ui.same_line();
+        let active = state.layer == layer;
+        let _t = active.then(|| {
+            ui.push_style_color(imgui::StyleColor::Button, rgb(60, 100, 200))
+        });
+        if ui.button(format!("{}##kb_layer", layer.label())) && !active {
+            state.layer = layer;
+            // drop the selection so the editor doesn't keep showing the old layer's data
+            state.selected_key = None;
+            state.cancel();
+        }
+    }
+    ui.same_line();
+    ui.text_disabled(match state.layer {
+        KbLayer::Base => "(always active)",
+        KbLayer::Shift => "(only while Shift is held)",
+        KbLayer::Alt => "(only while Alt is held)",
+    });
 
     // scale slider
     ui.text("Scale:");
@@ -293,16 +357,16 @@ fn draw_key_row(
             continue;
         }
 
-        let tgt = game_target(config, code);
+        let tgt = game_target(config, code, state.layer);
         let has = tgt.is_some();
-        let disabled = has && !is_enabled(config, code);
+        let disabled = has && !is_enabled(config, code, state.layer);
 
         let clicked = ui.invisible_button(format!("##key_{code}"), [kw, key_h]);
         let hovered = ui.is_item_hovered();
         let p0 = ui.item_rect_min();
         let p1 = ui.item_rect_max();
 
-        let ct = chat_target(config, code).filter(|&k| k != 0);
+        let ct = chat_target(config, code, state.layer).filter(|&k| k != 0);
         let sel = state.selected_key == Some(code);
         paint_key(ui, p0, p1, label, tgt, ct, has, disabled, sel);
 
@@ -328,10 +392,10 @@ fn handle_key_click(config: &Config, state: &mut KeyRebindsState, code: u32) {
     } else {
         state.selected_key = Some(code);
         state.cancel();
-        state.game_text = game_target(config, code)
+        state.game_text = game_target(config, code, state.layer)
             .map(|k| keycode_to_name(k).to_string())
             .unwrap_or_default();
-        state.chat_text = chat_target(config, code)
+        state.chat_text = chat_target(config, code, state.layer)
             .filter(|&k| k != 0)
             .map(|k| keycode_to_name(k).to_string())
             .unwrap_or_default();
@@ -501,10 +565,10 @@ fn draw_mouse(
         let clicked = ui.invisible_button(format!("##mkey_{code}"), [bw, bh]);
         let hovered = ui.is_item_hovered();
 
-        let tgt = game_target(config, code);
-        let ct = chat_target(config, code).filter(|&k| k != 0);
+        let tgt = game_target(config, code, state.layer);
+        let ct = chat_target(config, code, state.layer).filter(|&k| k != 0);
         let has = tgt.is_some();
-        let dis = has && !is_enabled(config, code);
+        let dis = has && !is_enabled(config, code, state.layer);
         let sel = state.selected_key == Some(code);
         paint_key(ui, bmin, bmax, label, tgt, ct, has, dis, sel);
 
@@ -534,13 +598,13 @@ fn rebind_editor(
     let Some(sel) = state.selected_key else { return };
     let name = keycode_to_name(sel);
 
-    ui.text(format!("Source: {name}"));
+    ui.text(format!("Source: {name}  [{} layer]", state.layer.label()));
 
-    let has = game_target(config, sel).is_some();
+    let has = game_target(config, sel, state.layer).is_some();
     if has {
-        let mut on = is_enabled(config, sel);
+        let mut on = is_enabled(config, sel, state.layer);
         if ui.checkbox(format!("Rebind Enabled##rb_en_{sel}"), &mut on) {
-            toggle_enabled(config, sel, on);
+            toggle_enabled(config, sel, on, state.layer);
             *dirty = true;
         }
     } else {
@@ -556,7 +620,7 @@ fn rebind_editor(
         .build()
     {
         if let Some(code) = parse_key_name(&state.chat_text) {
-            set_chat(config, sel, code);
+            set_chat(config, sel, code, state.layer);
             *dirty = true;
         }
     }
@@ -583,7 +647,7 @@ fn rebind_editor(
         .build()
     {
         if let Some(code) = parse_key_name(&state.game_text) {
-            set_game(config, sel, code);
+            set_game(config, sel, code, state.layer);
             *dirty = true;
         }
     }
@@ -603,7 +667,7 @@ fn rebind_editor(
 
     ui.dummy([0.0, 6.0]);
     if ui.button("Reset") {
-        clear_rebinds(config, sel);
+        clear_rebinds(config, sel, state.layer);
         state.game_text.clear();
         state.chat_text.clear();
         *dirty = true;

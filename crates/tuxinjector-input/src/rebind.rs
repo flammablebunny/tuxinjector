@@ -5,10 +5,29 @@ use tracing::debug;
 
 use tuxinjector_config::types::KeyRebindsConfig;
 
+// keyboard layer a rebind lives on
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Layer {
+    Base,
+    Shift,
+    Alt,
+}
+
+impl Layer {
+    fn from_config(s: &str) -> Layer {
+        match s {
+            "shift" => Layer::Shift,
+            "alt" => Layer::Alt,
+            _ => Layer::Base,
+        }
+    }
+}
+
 struct RebindEntry {
     from: i32,
     to_game: i32, // 0 = no rebind in game mode (pass key through unchanged)
     to_chat: i32, // 0 = no rebind in chat/text mode (pass key through unchanged)
+    layer: Layer,
 }
 
 impl RebindEntry {
@@ -25,6 +44,8 @@ pub struct KeyRebinder {
     // Some(false) = mod-provided state says cursor-grabbed (in-game)
     // None        = no mod state tag -> fall back to live GLFW cursor capture
     in_chat: Option<bool>,
+    // live GLFW modifier bits (0x1 shift, 0x4 alt) from the last input event
+    mods: i32,
 }
 
 impl KeyRebinder {
@@ -33,6 +54,7 @@ impl KeyRebinder {
             on: false,
             entries: Vec::new(),
             in_chat: None,
+            mods: 0,
         }
     }
 
@@ -47,6 +69,7 @@ impl KeyRebinder {
                     from: r.from_key as i32,
                     to_game: r.to_key as i32,
                     to_chat: r.to_key_chat as i32,
+                    layer: Layer::from_config(&r.modifier),
                 });
             }
         }
@@ -56,6 +79,39 @@ impl KeyRebinder {
             count = self.entries.len(),
             "updated key rebinds"
         );
+    }
+
+    /// Feed in the mods bitfield from a GLFW event.
+    /// Returns true if it actually changed, so the caller knows to re-publish
+    /// the active rebinds.
+    pub fn set_mods(&mut self, mods: i32) -> bool {
+        // we only care about shift/alt, mask off everything else (ctrl, etc.)
+        let relevant = mods & (GLFW_MOD_SHIFT | GLFW_MOD_ALT);
+        if self.mods != relevant {
+            self.mods = relevant;
+            true
+        } else {
+            false
+        }
+    }
+
+    // Pick the winning entry for a physical key. A held-modifier layer beats
+    // the base entry, and a layer entry is dead unless its modifier is down.
+    // Shift outranks alt when both are held (hence the early return on shift).
+    fn best_entry(&self, matches: impl Fn(&RebindEntry) -> bool) -> Option<&RebindEntry> {
+        let shift = self.mods & GLFW_MOD_SHIFT != 0;
+        let alt = self.mods & GLFW_MOD_ALT != 0;
+        let mut base: Option<&RebindEntry> = None;
+        let mut alt_hit: Option<&RebindEntry> = None;
+        for e in self.entries.iter().filter(|e| matches(e)) {
+            match e.layer {
+                Layer::Shift if shift => return Some(e), // best possible, bail early
+                Layer::Alt if alt => alt_hit = alt_hit.or(Some(e)),
+                Layer::Base => base = base.or(Some(e)),
+                _ => {}
+            }
+        }
+        alt_hit.or(base)
     }
 
     // returns true if the chat state actually changed
@@ -92,9 +148,7 @@ impl KeyRebinder {
         }
         let sc_key = tuxinjector_config::key_names::SCANCODE_OFFSET as i32 + scancode;
         let in_chat = self.effective_in_chat();
-        self.entries
-            .iter()
-            .find(|e| e.from == key || (scancode > 0 && e.from == sc_key))
+        self.best_entry(|e| e.from == key || (scancode > 0 && e.from == sc_key))
             .and_then(|e| e.target(in_chat))
             .unwrap_or(key)
     }
@@ -105,9 +159,7 @@ impl KeyRebinder {
             return key;
         }
         let in_chat = self.effective_in_chat();
-        self.entries
-            .iter()
-            .find(|e| e.target(in_chat) == Some(key))
+        self.best_entry(|e| e.target(in_chat) == Some(key))
             .map(|e| e.from)
             .unwrap_or(key)
     }
@@ -116,19 +168,33 @@ impl KeyRebinder {
         self.on
     }
 
-    // active (from, to) pairs for current state. empty when disabled
+    // active (from, to) pairs for current state (chat mode + held modifiers).
+    // empty when disabled
     pub fn active_rebinds(&self) -> Vec<(i32, i32)> {
-        if self.on {
-            let in_chat = self.effective_in_chat();
-            self.entries
-                .iter()
-                .filter_map(|e| e.target(in_chat).map(|t| (e.from, t)))
-                .collect()
-        } else {
-            Vec::new()
+        if !self.on {
+            return Vec::new();
         }
+        let in_chat = self.effective_in_chat();
+        let mut out: Vec<(i32, i32)> = Vec::new();
+        for e in &self.entries {
+            // resolve each distinct source key through the layer priority
+            if out.iter().any(|(f, _)| *f == e.from) {
+                continue;
+            }
+            if let Some(t) = self
+                .best_entry(|c| c.from == e.from)
+                .and_then(|c| c.target(in_chat))
+            {
+                out.push((e.from, t));
+            }
+        }
+        out
     }
 }
+
+// GLFW modifier bits
+const GLFW_MOD_SHIFT: i32 = 0x0001;
+const GLFW_MOD_ALT: i32 = 0x0004;
 
 impl Default for KeyRebinder {
     fn default() -> Self {
@@ -142,11 +208,15 @@ mod tests {
     use tuxinjector_config::types::{KeyRebind, KeyRebindsConfig};
 
     fn mk(from: i32, game: i32) -> RebindEntry {
-        RebindEntry { from, to_game: game, to_chat: 0 }
+        RebindEntry { from, to_game: game, to_chat: 0, layer: Layer::Base }
     }
 
     fn mk_split(from: i32, game: i32, chat: i32) -> RebindEntry {
-        RebindEntry { from, to_game: game, to_chat: chat }
+        RebindEntry { from, to_game: game, to_chat: chat, layer: Layer::Base }
+    }
+
+    fn mk_layer(from: i32, game: i32, layer: Layer) -> RebindEntry {
+        RebindEntry { from, to_game: game, to_chat: 0, layer }
     }
 
     // Pin an explicit game-mode state so tests don't depend on the
@@ -343,6 +413,74 @@ mod tests {
         assert_eq!(rb.remap_key(65, 31), 65);
         // no scancode should not match
         assert_eq!(rb.remap_key(65, 0), 65);
+    }
+
+    #[test]
+    fn shift_layer_beats_base_only_while_held() {
+        let mut rb = new_in_game();
+        rb.on = true;
+        rb.entries.push(mk(65, 66)); // base: A -> B
+        rb.entries.push(mk_layer(65, 67, Layer::Shift)); // shift: A -> C
+        rb.entries.push(mk_layer(65, 68, Layer::Alt)); // alt: A -> D
+
+        assert_eq!(rb.remap_key(65, 0), 66, "no modifier -> base");
+        assert!(rb.set_mods(GLFW_MOD_SHIFT));
+        assert_eq!(rb.remap_key(65, 0), 67, "shift held -> shift layer");
+        rb.set_mods(GLFW_MOD_ALT);
+        assert_eq!(rb.remap_key(65, 0), 68, "alt held -> alt layer");
+        rb.set_mods(GLFW_MOD_SHIFT | GLFW_MOD_ALT);
+        assert_eq!(rb.remap_key(65, 0), 67, "both held -> shift wins");
+        rb.set_mods(0);
+        assert_eq!(rb.remap_key(65, 0), 66, "released -> base again");
+    }
+
+    #[test]
+    fn layer_rebind_without_base_passes_through() {
+        let mut rb = new_in_game();
+        rb.on = true;
+        rb.entries.push(mk_layer(65, 67, Layer::Shift)); // shift-only rebind
+
+        assert_eq!(rb.remap_key(65, 0), 65, "no shift -> untouched");
+        rb.set_mods(GLFW_MOD_SHIFT);
+        assert_eq!(rb.remap_key(65, 0), 67);
+    }
+
+    #[test]
+    fn set_mods_reports_changes_and_ignores_other_bits() {
+        let mut rb = KeyRebinder::new();
+        assert!(!rb.set_mods(0x0002)); // ctrl only -> irrelevant, no change
+        assert!(rb.set_mods(GLFW_MOD_SHIFT));
+        assert!(!rb.set_mods(GLFW_MOD_SHIFT | 0x0002)); // ctrl bit masked out
+        assert!(rb.set_mods(0));
+    }
+
+    #[test]
+    fn active_rebinds_reflect_layer() {
+        let mut rb = new_in_game();
+        rb.on = true;
+        rb.entries.push(mk(65, 66));
+        rb.entries.push(mk_layer(65, 67, Layer::Shift));
+        assert_eq!(rb.active_rebinds(), vec![(65, 66)]);
+        rb.set_mods(GLFW_MOD_SHIFT);
+        assert_eq!(rb.active_rebinds(), vec![(65, 67)]);
+    }
+
+    #[test]
+    fn layer_loads_from_config() {
+        let mut rb = new_in_game();
+        let config = KeyRebindsConfig {
+            enabled: true,
+            rebinds: vec![KeyRebind {
+                from_key: 65,
+                to_key: 70,
+                modifier: "shift".into(),
+                ..Default::default()
+            }],
+        };
+        rb.update_from_config(&config);
+        assert_eq!(rb.remap_key(65, 0), 65, "shift layer inert without shift");
+        rb.set_mods(GLFW_MOD_SHIFT);
+        assert_eq!(rb.remap_key(65, 0), 70);
     }
 
     #[test]
