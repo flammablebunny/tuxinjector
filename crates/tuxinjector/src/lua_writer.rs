@@ -199,3 +199,28 @@ fn format_value(val: &serde_json::Value, buf: &mut String, depth: usize) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tuxinjector_core::color::Color;
+
+    #[test]
+    fn trail_gradient_survives_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.theme.cursor_trail.enabled = true;
+        cfg.theme.cursor_trail.use_gradient = true;
+        cfg.theme.cursor_trail.color = Color::WHITE;
+        cfg.theme.cursor_trail.tail_color = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+
+        let lua = format!("return {}", config_to_lua(&cfg).unwrap());
+        // sanity: the field is actually emitted
+        assert!(lua.contains("useGradient = true"), "useGradient not serialized:\n{lua}");
+
+        let loaded = tuxinjector_lua::load_lua_config(&lua).unwrap();
+        assert!(loaded.theme.cursor_trail.use_gradient, "use_gradient lost in roundtrip");
+        let tc = loaded.theme.cursor_trail.tail_color;
+        assert!((tc.r - 1.0).abs() < 1e-3 && tc.g < 1e-3 && tc.b < 1e-3,
+            "tail_color lost: {tc:?}");
+    }
+}

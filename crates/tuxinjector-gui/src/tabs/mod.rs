@@ -11,5 +11,6 @@ pub mod key_rebinds;
 pub mod mirrors;
 pub mod modes;
 pub mod mouse;
+pub mod ninjabrain;
 pub mod plugins;
 pub mod window_overlays;

@@ -78,7 +78,9 @@ pub fn sensitivity_debounce() -> i32 { 0 }
 
 pub fn profiler_scale() -> f32 { 0.8 }
 pub fn virtual_camera_fps() -> i32 { 60 }
-pub fn cursor_size() -> i32 { 64 }
+// System cursor sizes above 256 hit hardware cursor plane limits, so the
+// range is 8-256 (toolscreen allows up to 320 on Windows).
+pub fn cursor_size() -> i32 { 32 }
 
 // --- eyezoom defaults ---
 // Tuned for 1080p minecraft. I'll probably want to

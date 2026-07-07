@@ -38,7 +38,6 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
         }
     }
     if ui.checkbox("Show Hotkey Debug", &mut dbg.show_hotkey_debug) { *dirty = true; }
-    if ui.checkbox("Fake Cursor", &mut dbg.fake_cursor) { *dirty = true; }
     if ui.checkbox("Show Texture Grid", &mut dbg.show_texture_grid) { *dirty = true; }
 
     ui.dummy([0.0, 8.0]);
@@ -73,7 +72,7 @@ pub fn render(ui: &imgui::Ui, config: &mut Config, dirty: &mut bool) {
     if ui.checkbox("Texture Ops", &mut dbg.log_texture_ops) { *dirty = true; }
     if ui.checkbox("GUI", &mut dbg.log_gui) { *dirty = true; }
     if ui.checkbox("Init", &mut dbg.log_init) { *dirty = true; }
-    if ui.checkbox("Cursor Textures", &mut dbg.log_cursor_textures) { *dirty = true; }
+    if ui.checkbox("Overlay", &mut dbg.log_overlay) { *dirty = true; }
 
     ui.columns(1, "log_cols_end", false);
 }

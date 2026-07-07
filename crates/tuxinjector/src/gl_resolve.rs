@@ -112,6 +112,7 @@ gl_fn_type!(PfnGlTexImage2D           => unsafe fn(target: GLenum, level: GLint,
 gl_fn_type!(PfnGlTexSubImage2D        => unsafe fn(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, width: GLsizei, height: GLsizei, format: GLenum, ty: GLenum, pixels: *const c_void));
 gl_fn_type!(PfnGlTexParameteri        => unsafe fn(target: GLenum, pname: GLenum, param: GLint));
 gl_fn_type!(PfnGlCopyTexSubImage2D   => unsafe fn(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, x: GLint, y: GLint, width: GLsizei, height: GLsizei));
+gl_fn_type!(PfnGlGenerateMipmap      => unsafe fn(target: GLenum));
 
 gl_fn_type!(PfnGlEnable               => unsafe fn(cap: GLenum));
 gl_fn_type!(PfnGlDisable              => unsafe fn(cap: GLenum));
@@ -196,6 +197,7 @@ pub struct GlFunctions {
     pub tex_sub_image_2d:  PfnGlTexSubImage2D,
     pub tex_parameter_i:   PfnGlTexParameteri,
     pub copy_tex_sub_image_2d: PfnGlCopyTexSubImage2D,
+    pub generate_mipmap:   PfnGlGenerateMipmap,
 
     // -- Render State --
     pub enable:               PfnGlEnable,
@@ -321,6 +323,12 @@ impl GlFunctions {
             tex_sub_image_2d:  resolve!(required gpa, "glTexSubImage2D"),
             tex_parameter_i:   resolve!(required gpa, "glTexParameteri"),
             copy_tex_sub_image_2d: resolve!(required gpa, "glCopyTexSubImage2D"),
+            // Apple's GL 2.1 legacy profile exports the EXT_framebuffer_object
+            // entry point, not the unsuffixed core-3.0 name (same void(GLenum) sig).
+            #[cfg(target_os = "macos")]
+            generate_mipmap:   resolve!(required gpa, "glGenerateMipmapEXT"),
+            #[cfg(target_os = "linux")]
+            generate_mipmap:   resolve!(required gpa, "glGenerateMipmap"),
 
             enable:              resolve!(required gpa, "glEnable"),
             disable:             resolve!(required gpa, "glDisable"),

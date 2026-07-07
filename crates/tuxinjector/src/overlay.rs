@@ -3,7 +3,7 @@
 // and draw it into the game's backbuffer.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -185,7 +185,8 @@ pub struct OverlayState {
     mirrors: MirrorCaptureManager,
     img_cache: ImageCache,
     bg_cache: BgImageCache,
-    cursor_cache: CursorCache,
+    cursor_trail: crate::cursor_trail::CursorTrail,
+    nbb_cache: crate::nbb_overlay::NbbOverlayCache,
     text_cache: TextOverlayCache,
     gui: GuiRenderer,
     app_capture: AppCaptureManager,
@@ -452,130 +453,6 @@ impl BgImageCache {
     }
 }
 
-// --- cursor cache ---
-
-fn dirs_cursors_path() -> PathBuf {
-    std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".config/tuxinjector/cursors"))
-        .unwrap_or_default()
-}
-
-struct CursorCache {
-    pixels: Option<Vec<u8>>,
-    w: u32,
-    h: u32,
-    hotspot_x: f32,
-    hotspot_y: f32,
-    loaded_name: String,
-    loaded_size: i32,
-}
-
-impl CursorCache {
-    fn new() -> Self {
-        Self {
-            pixels: None, w: 0, h: 0,
-            hotspot_x: 0.0, hotspot_y: 0.0,
-            loaded_name: String::new(), loaded_size: 0,
-        }
-    }
-
-    fn get_cursor(&mut self, name: &str, size: i32) -> Option<(&[u8], u32, u32, f32, f32)> {
-        if name.is_empty() { return None; }
-
-        if self.loaded_name != name || self.loaded_size != size {
-            self.load(name, size);
-        }
-
-        self.pixels.as_ref().map(|px| {
-            (px.as_slice(), self.w, self.h, self.hotspot_x, self.hotspot_y)
-        })
-    }
-
-    fn load(&mut self, name: &str, size: i32) {
-        self.loaded_name = name.to_string();
-        self.loaded_size = size;
-        let sz = size.max(8) as u32;
-
-        // search: direct path first, then cursors folder
-        let candidates = vec![
-            PathBuf::from(name),
-            dirs_cursors_path().join(name),
-        ];
-
-        for path in &candidates {
-            if !path.exists() { continue; }
-            match image_loader::load_image(path) {
-                Ok(ImageData::Static(img)) => {
-                    tracing::info!(?path, w = img.width, h = img.height, "loaded cursor");
-                    self.w = img.width;
-                    self.h = img.height;
-                    self.hotspot_x = img.width as f32 / 2.0;
-                    self.hotspot_y = img.height as f32 / 2.0;
-                    self.pixels = Some(img.pixels);
-                    return;
-                }
-                Ok(ImageData::Animated { frames, .. }) => {
-                    if let Some(frame) = frames.into_iter().next() {
-                        self.w = frame.width;
-                        self.h = frame.height;
-                        self.hotspot_x = frame.width as f32 / 2.0;
-                        self.hotspot_y = frame.height as f32 / 2.0;
-                        self.pixels = Some(frame.pixels);
-                        return;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(?path, %e, "cursor load failed");
-                }
-            }
-        }
-
-        // procedural crosshair fallback
-        tracing::info!(name, sz, "generating procedural crosshair");
-        let px = gen_crosshair(sz);
-        self.hotspot_x = sz as f32 / 2.0;
-        self.hotspot_y = sz as f32 / 2.0;
-        self.w = sz;
-        self.h = sz;
-        self.pixels = Some(px);
-    }
-}
-
-fn gen_crosshair(size: u32) -> Vec<u8> {
-    let mut px = vec![0u8; (size * size * 4) as usize];
-    let center = size / 2;
-    let thick = 1u32.max(size / 16);
-    let gap = size / 6;
-    let outline = 1u32;
-
-    for y in 0..size {
-        for x in 0..size {
-            let idx = ((y * size + x) * 4) as usize;
-            let dx = (x as i32 - center as i32).unsigned_abs();
-            let dy = (y as i32 - center as i32).unsigned_abs();
-
-            let on_h = dy < thick && dx > gap && dx < center;
-            let on_v = dx < thick && dy > gap && dy < center;
-            let on_dot = dx < thick && dy < thick;
-
-            if on_h || on_v || on_dot {
-                px[idx] = 255; px[idx + 1] = 255;
-                px[idx + 2] = 255; px[idx + 3] = 255;
-            } else {
-                // outline pixels
-                let near_h = dy <= thick + outline && dx > gap.saturating_sub(outline) && dx < center + outline;
-                let near_v = dx <= thick + outline && dy > gap.saturating_sub(outline) && dy < center + outline;
-                let near_dot = dx <= thick + outline && dy <= thick + outline;
-
-                if (near_h || near_v || near_dot) && !(on_h || on_v || on_dot) {
-                    px[idx + 3] = 200; // semi-transparent black outline
-                }
-            }
-        }
-    }
-    px
-}
-
 fn expand_tilde(path: &str) -> std::borrow::Cow<'_, str> {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
@@ -635,7 +512,8 @@ impl OverlayState {
             mirrors,
             img_cache: ImageCache::new(),
             bg_cache: BgImageCache::new(),
-            cursor_cache: CursorCache::new(),
+            cursor_trail: crate::cursor_trail::CursorTrail::new(),
+            nbb_cache: crate::nbb_overlay::NbbOverlayCache::new(),
             text_cache: TextOverlayCache::new(),
             gui,
             app_capture: AppCaptureManager::new(),
@@ -728,7 +606,6 @@ impl OverlayState {
             &mut self.mirrors,
             &mut self.img_cache,
             &mut self.bg_cache,
-            &mut self.cursor_cache,
             &mut self.text_cache,
             &cfg,
             self.game_tex,
@@ -830,6 +707,45 @@ impl OverlayState {
                     });
                 }
             }
+        }
+
+        // NBB overlay is a single panel we rasterize once and just blit
+        if cfg.overlays.ninjabrain.enabled {
+            if let Some(elem) = crate::nbb_overlay::build_nbb_element(
+                &mut self.nbb_cache,
+                &cfg.overlays.ninjabrain,
+                vp_w,
+                vp_h,
+            ) {
+                scene.elements.push(elem);
+            }
+        }
+
+        // Cursor trail: stamps follow the real pointer. Same input feed +
+        // content-scale conversion as the imgui pointer below (physical px).
+        // Pushed last so it sits over the scene but under the imgui GUI.
+        if cfg.theme.cursor_trail.enabled {
+            let tcfg = cfg.theme.cursor_trail.clamped();
+            let now = self.cursor_trail.now_ms();
+            // don't advance while the pointer's grabbed unless the GUI is up
+            let visible = !tuxinjector_input::is_cursor_captured() || self.gui.is_visible();
+            if visible {
+                let (mx, my) = tuxinjector_input::raw_mouse_position();
+                let (sx, sy) = unsafe { crate::viewport_hook::content_scale() };
+                self.cursor_trail
+                    .advance((mx as f32 * sx, my as f32 * sy), now, &tcfg, (vp_w, vp_h));
+            }
+            let tex = unsafe { self.cursor_trail.ensure_sprite(&self.local_gl, &tcfg.sprite_path) };
+            let verts = self.cursor_trail.build_verts(now, &tcfg, (vp_w, vp_h)).to_vec();
+            if tex != 0 && !verts.is_empty() {
+                scene.elements.push(SceneElement::TrailBatch {
+                    gl_texture: tex,
+                    verts,
+                    additive: tcfg.blend_mode == "Additive",
+                });
+            }
+        } else {
+            self.cursor_trail.reset();
         }
 
         let n_elems = scene.elements.len();
@@ -1302,7 +1218,6 @@ fn build_scene(
     mirrors: &mut MirrorCaptureManager,
     img_cache: &mut ImageCache,
     bg_cache: &mut BgImageCache,
-    cursor_cache: &mut CursorCache,
     text_cache: &mut TextOverlayCache,
     cfg: &tuxinjector_config::Config,
     game_tex: Option<(u32, u32, u32)>,
@@ -1846,51 +1761,6 @@ fn build_scene(
             radius: border.radius,
             color: border.color,
         });
-    }
-
-    // custom cursor should only be shown when the game is showing a cursor
-    if cfg.theme.cursors.enabled {
-        let captured = tuxinjector_input::is_cursor_captured();
-        let gs = tuxinjector_lua::get_game_state();
-
-        let cc = if captured {
-            None // cursor grabbed = FPS mode, no cursor
-        } else {
-            match gs.as_str() {
-                // inworld with menu open (not grabbed) — show ingame cursor
-                s if s.starts_with("inworld") => Some(&cfg.theme.cursors.ingame),
-                "wall" => Some(&cfg.theme.cursors.wall),
-                "title" | "waiting" => Some(&cfg.theme.cursors.title),
-                // generating, previewing, etc -  no cursor
-                _ => None,
-            }
-        };
-
-        if let Some(cc) = cc {
-            if !cc.cursor_name.is_empty() {
-                if let Some((px, cw, ch, _hx, _hy)) = cursor_cache.get_cursor(&cc.cursor_name, cc.cursor_size) {
-                    let (mx, my) = tuxinjector_input::raw_mouse_position();
-                    let hx = cw as f32 * cc.hotspot_x;
-                    let hy = ch as f32 * cc.hotspot_y;
-
-                    elems.push(SceneElement::Textured {
-                        x: mx as f32 - hx, y: my as f32 - hy,
-                        w: cw as f32, h: ch as f32,
-                        tex_width: cw, tex_height: ch,
-                        pixels: px.to_vec(),
-                        circle_clip: false, nearest_filter: true,
-                        filter_target_colors: Vec::new(),
-                        filter_output_color: [0.0; 4],
-                        filter_sensitivity: 0.0,
-                        filter_color_passthrough: false,
-                        filter_border_color: [0.0; 4],
-                        filter_border_width: 0,
-                        filter_gamma_mode: 0,
-                        custom_shader: None,
-                    });
-                }
-            }
-        }
     }
 
     SceneDescription {

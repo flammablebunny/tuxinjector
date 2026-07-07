@@ -29,6 +29,7 @@ pub enum HotkeyAction {
     ToggleWindowOverlays,
     ToggleBorderless,
     ToggleAppVisibility,
+    ToggleNinjabrainOverlay,
     // launch the selected companion apps (NinjaBrainBot / Paceman)
     LaunchApps {
         nbb: bool,
@@ -184,6 +185,22 @@ impl HotkeyEngine {
             self.bindings.push(Binding {
                 keys,
                 action: HotkeyAction::ToggleWindowOverlays,
+                on_release: false,
+                block_game: false,
+                debounce_ms: TOGGLE_DEBOUNCE,
+                conditions: HotkeyConditions::default(),
+            });
+        }
+
+        if !config.hotkeys.ninjabrain_overlay.is_empty() {
+            let keys: Vec<i32> = config
+                .hotkeys.ninjabrain_overlay
+                .iter()
+                .map(|&k| k as i32)
+                .collect();
+            self.bindings.push(Binding {
+                keys,
+                action: HotkeyAction::ToggleNinjabrainOverlay,
                 on_release: false,
                 block_game: false,
                 debounce_ms: TOGGLE_DEBOUNCE,

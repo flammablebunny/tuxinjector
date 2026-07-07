@@ -1980,32 +1980,6 @@ pub unsafe fn cursor_screen_to_game(x: f64, y: f64) -> (f64, f64) {
     (gx, gy)
 }
 
-/// Inverse of `cursor_screen_to_game`: takes a position in MC's fb space and
-/// returns where it should be drawn in screen (window-point) coords.
-///
-/// Used by overlay rendering so the visible "custom cursor" is drawn exactly
-/// where MC thinks the cursor is -- not where the raw OS cursor happens to
-/// be. This guarantees visual cursor == game cursor at all times.
-pub fn game_to_screen(gx: f64, gy: f64) -> (f64, f64) {
-    let (mw, mh) = get_mode_size();
-    let (ow, oh) = get_original_size();
-
-    if mw == 0 || ow == 0 || (mw == ow && mh == oh) {
-        return (gx, gy);
-    }
-
-    let (vp_x, vp_y, vp_w, vp_h) = rendered_viewport_or_fallback();
-    // Inverse of the forward transform:
-    //   screen_fb = vp_offset + game * (vp_size / mode_size)
-    //   screen    = screen_fb / content_scale
-    let x_fb = vp_x as f64 + gx * (vp_w as f64 / mw as f64);
-    let y_fb = vp_y as f64 + gy * (vp_h as f64 / mh as f64);
-    let (sx, sy) = unsafe { content_scale() };
-    let sx = if sx == 0.0 { 1.0 } else { sx };
-    let sy = if sy == 0.0 { 1.0 } else { sy };
-    (x_fb / sx as f64, y_fb / sy as f64)
-}
-
 /// Trigger a mode resize: store dims, resize surface, fire GLFW callback
 pub unsafe fn fire_framebuffer_resize(mode_w: u32, mode_h: u32) {
     let (orig_w, orig_h) = unpack(ORIGINAL_DIMS.load(Ordering::Acquire));

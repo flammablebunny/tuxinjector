@@ -911,8 +911,12 @@ impl AppCaptureManager {
         self.embedded.keys().copied().collect()
     }
 
-    pub fn toggle_visibility(&mut self) {
-        self.visible = !self.visible;
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
     }
 
     // Drain the key queue and pipe everything to companion apps via stdin

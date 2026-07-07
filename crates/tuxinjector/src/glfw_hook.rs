@@ -350,6 +350,101 @@ pub unsafe extern "C" fn glfwSetClipboardString(window: GlfwWindow, string: *con
     }
 }
 
+// --- GLFW cursor objects (custom cursor feature) ---
+//
+// The custom cursor is a real GLFW cursor object built from the user's image
+// and applied with glfwSetCursor; the compositor moves it (no latency, no
+// coordinate math) and GLFW re-applies it across CURSOR_DISABLED/NORMAL
+// transitions. Pointers must come from the game's bundled libglfw (same
+// reason as glfwGetCursorPos above), captured via the dlsym interpose.
+
+#[repr(C)]
+pub struct GlfwImage {
+    pub width: c_int,
+    pub height: c_int,
+    pub pixels: *const u8, // RGBA8; glfwCreateCursor copies the data
+}
+
+type GlfwCreateCursorFn = unsafe extern "C" fn(*const GlfwImage, c_int, c_int) -> *mut c_void;
+type GlfwDestroyCursorFn = unsafe extern "C" fn(*mut c_void);
+type GlfwSetCursorFn = unsafe extern "C" fn(GlfwWindow, *mut c_void);
+
+static REAL_CREATE_CURSOR_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_DESTROY_CURSOR_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_SET_CURSOR_PTR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+pub fn store_real_create_cursor(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_CREATE_CURSOR_PTR.store(ptr, Ordering::Release);
+    }
+}
+
+pub fn store_real_destroy_cursor(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_DESTROY_CURSOR_PTR.store(ptr, Ordering::Release);
+    }
+}
+
+pub fn store_real_set_cursor(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        REAL_SET_CURSOR_PTR.store(ptr, Ordering::Release);
+    }
+}
+
+pub fn cursor_fns_available() -> bool {
+    !REAL_CREATE_CURSOR_PTR.load(Ordering::Acquire).is_null()
+        && !REAL_SET_CURSOR_PTR.load(Ordering::Acquire).is_null()
+}
+
+/// Render thread only (GLFW cursor calls aren't thread-safe).
+pub unsafe fn real_create_cursor(image: &GlfwImage, xhot: c_int, yhot: c_int) -> *mut c_void {
+    let ptr = REAL_CREATE_CURSOR_PTR.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let real: GlfwCreateCursorFn = std::mem::transmute(ptr);
+    real(image, xhot, yhot)
+}
+
+/// Render thread only. No-op if the fn ptr or cursor is null.
+pub unsafe fn real_destroy_cursor(cursor: *mut c_void) {
+    let ptr = REAL_DESTROY_CURSOR_PTR.load(Ordering::Acquire);
+    if ptr.is_null() || cursor.is_null() {
+        return;
+    }
+    let real: GlfwDestroyCursorFn = std::mem::transmute(ptr);
+    real(cursor)
+}
+
+/// Render thread only. Returns false when we haven't captured the real fn yet.
+pub unsafe fn real_set_cursor(window: GlfwWindow, cursor: *mut c_void) -> bool {
+    let ptr = REAL_SET_CURSOR_PTR.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return false;
+    }
+    let real: GlfwSetCursorFn = std::mem::transmute(ptr);
+    real(window, cursor);
+    true
+}
+
+// Mirror of toolscreen's hkglfwSetCursor: record what the game wanted so we
+// can restore it, and keep our cursor installed while the feature owns the
+// window cursor (vanilla MC never calls this, but cursor mods do).
+#[no_mangle]
+pub unsafe extern "C" fn glfwSetCursor(window: GlfwWindow, cursor: *mut c_void) {
+    let forward = crate::cursor_system::on_game_set_cursor(cursor);
+    if !real_set_cursor(window, forward) {
+        // Capture didn't run yet; fall back to the real symbol. resolve_real_symbol
+        // is RTLD_NEXT on Linux / RTLD_DEFAULT on macOS — two-level namespace hides
+        // LWJGL's bundled GLFW from RTLD_NEXT there, so RTLD_NEXT would find nothing.
+        let ptr = crate::dlsym_hook::resolve_real_symbol(b"glfwSetCursor\0");
+        if !ptr.is_null() {
+            let real: GlfwSetCursorFn = std::mem::transmute(ptr);
+            real(window, forward);
+        }
+    }
+}
+
 // --- glfwGetMouseButton ---
 
 type GlfwGetMouseButtonFn = unsafe extern "C" fn(GlfwWindow, c_int) -> c_int;

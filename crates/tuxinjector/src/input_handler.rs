@@ -186,6 +186,13 @@ impl TuxinjectorInputHandler {
                     }
                 }
             }
+            HotkeyAction::ToggleNinjabrainOverlay => {
+                let vis = !crate::nbb_overlay::NBB_OVERLAY_VISIBLE
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                crate::nbb_overlay::NBB_OVERLAY_VISIBLE
+                    .store(vis, std::sync::atomic::Ordering::Relaxed);
+                tracing::debug!(visible = vis, "hotkey: toggle ninjabrain overlay");
+            }
             HotkeyAction::LaunchApps { nbb, paceman } => {
                 tracing::debug!(nbb, paceman, "hotkey: launch companion apps");
                 tuxinjector_gui::tabs::apps::request_launch(*nbb, *paceman);

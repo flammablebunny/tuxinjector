@@ -124,6 +124,102 @@ mod tests {
     }
 
     #[test]
+    fn cursors_and_trail_parse() {
+        let cfg = load_lua_config(
+            r#"
+            return {
+                theme = {
+                    cursors = {
+                        enabled = true,
+                        title = { cursorName = "title.cur", cursorSize = 64 },
+                        wall = { cursorName = "wall.png", cursorSize = 72, hotspotX = 0.25 },
+                        ingame = { cursorName = "ingame.png", cursorSize = 88 },
+                    },
+                    cursorTrail = {
+                        enabled = true,
+                        lifetimeMs = 300,
+                        stampSpacingPx = 4,
+                        useGradient = true,
+                        color = {255, 0, 0},
+                        tailColor = {0, 0, 255},
+                        blendMode = "Additive",
+                        opacity = 0.5,
+                    },
+                },
+            }
+            "#,
+        )
+        .unwrap();
+
+        let cur = &cfg.theme.cursors;
+        assert!(cur.enabled);
+        assert_eq!(cur.title.cursor_name, "title.cur");
+        assert_eq!(cur.title.cursor_size, 64);
+        assert_eq!(cur.wall.cursor_name, "wall.png");
+        assert!((cur.wall.hotspot_x - 0.25).abs() < 1e-6);
+        assert_eq!(cur.ingame.cursor_size, 88);
+        // a partially-specified table fills missing fields from
+        // CursorConfig::default() (top-left hotspot)...
+        assert!(cur.ingame.hotspot_x.abs() < 1e-6);
+        // ...while a fully absent cursors table gets the centered
+        // ingame hotspot from CursorsConfig::default()
+        let empty = load_lua_config("return {}").unwrap();
+        assert!((empty.theme.cursors.ingame.hotspot_x - 0.5).abs() < 1e-6);
+
+        let trail = &cfg.theme.cursor_trail;
+        assert!(trail.enabled);
+        assert_eq!(trail.lifetime_ms, 300);
+        assert_eq!(trail.stamp_spacing_px, 4);
+        assert!(trail.use_gradient);
+        assert!((trail.color.r - 1.0).abs() < 1e-6 && trail.color.g < 1e-6);
+        assert!((trail.tail_color.b - 1.0).abs() < 1e-6);
+        assert_eq!(trail.blend_mode, "Additive");
+        assert!((trail.opacity - 0.5).abs() < 1e-6);
+        // untouched fields keep their defaults
+        assert_eq!(trail.sprite_size_px, 11);
+    }
+
+    #[test]
+    fn trail_clamping() {
+        let cfg = load_lua_config(
+            r#"
+            return {
+                theme = {
+                    cursorTrail = {
+                        lifetimeMs = 9999,
+                        stampSpacingPx = 0,
+                        spriteSizePx = 1000,
+                        tailSizeScale = -1.0,
+                        opacity = 2.0,
+                    },
+                },
+            }
+            "#,
+        )
+        .unwrap();
+        let t = cfg.theme.cursor_trail.clamped();
+        assert_eq!(t.lifetime_ms, 500);
+        assert_eq!(t.stamp_spacing_px, 1);
+        assert_eq!(t.sprite_size_px, 256);
+        assert!(t.tail_size_scale.abs() < 1e-6);
+        assert!((t.opacity - 1.0).abs() < 1e-6);
+    }
+
+    // three-sync-points guard: the bundled template's cursor sections must
+    // match the serde/Default values exactly
+    #[test]
+    fn default_lua_template_matches_defaults() {
+        let template = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/default.lua"
+        ));
+        let cfg = load_lua_config(template).unwrap();
+        let defaults = tuxinjector_config::Config::default();
+        assert_eq!(cfg.theme.cursors, defaults.theme.cursors);
+        assert_eq!(cfg.theme.cursor_trail, defaults.theme.cursor_trail);
+    }
+
+    #[test]
     fn modes_array() {
         let cfg = load_lua_config(
             r#"

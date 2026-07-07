@@ -799,13 +799,52 @@ unsafe fn render_overlay() {
     let gui_vis = tuxinjector_input::gui_is_visible();
     let has_apps = tuxinjector_gui::running_apps::registered_count() > 0;
 
+    // Keep the system-cursor selection in sync every frame, even on the fast
+    // path below - the title screen with an empty scene is exactly where a
+    // custom cursor shows up. It's a cheap no-op when nothing changed. A live
+    // trail also needs the full pipeline so its stamps can advance and fade.
+    let (trail_active, nbb_active) = {
+        let cfg = state::get().config.load();
+        crate::cursor_system::tick(&cfg, gui_vis);
+        // Start/stop/restart the NBB client to follow whatever the config says
+        crate::nbb_client::apply_config(
+            cfg.overlays.ninjabrain.enabled,
+            &cfg.overlays.ninjabrain.api_base_url,
+        );
+        if tuxinjector_gui::tabs::ninjabrain::take_restart_request() {
+            crate::nbb_client::restart(&cfg.overlays.ninjabrain.api_base_url);
+        }
+        if gui_vis {
+            use crate::nbb_client::NbbState;
+            let st = crate::nbb_client::get_status();
+            tuxinjector_gui::tabs::ninjabrain::publish_status(
+                tuxinjector_gui::tabs::ninjabrain::NbbStatusView {
+                    state: match st.state {
+                        NbbState::Connected => "connected",
+                        NbbState::Connecting => "connecting",
+                        NbbState::Offline => "offline",
+                        NbbState::Stopped => "stopped",
+                    }
+                    .to_string(),
+                    api_base_url: st.api_base_url,
+                    last_error: st.last_error,
+                    overlay_visible: crate::nbb_overlay::NBB_OVERLAY_VISIBLE
+                        .load(Ordering::Relaxed),
+                },
+            );
+        }
+        (cfg.theme.cursor_trail.enabled, cfg.overlays.ninjabrain.enabled)
+    };
+
     let needs_centering = {
         let (mw, mh) = crate::viewport_hook::get_mode_size();
         let (ow, oh) = crate::viewport_hook::get_original_size();
         mw > 0 && mh > 0 && ow > 0 && oh > 0 && (mw != ow || mh != oh)
     };
 
-    if !SCENE_ACTIVE.load(Ordering::Relaxed) && !gui_vis && !has_apps && !needs_centering {
+    if !SCENE_ACTIVE.load(Ordering::Relaxed) && !gui_vis && !has_apps && !needs_centering
+        && !trail_active && !nbb_active
+    {
         // still need to process lua commands and poll borderless toggle
         // (these can change state that makes the scene active next frame)
         crate::viewport_hook::poll_borderless_toggle();

@@ -10,6 +10,9 @@ mod app_capture;
 mod companion_clipboard;
 mod browser_capture;
 mod config_init;
+mod cursor_image;
+mod cursor_system;
+mod cursor_trail;
 mod dlsym_hook;
 mod overlay_gen;
 mod lua_writer;
@@ -18,6 +21,10 @@ mod glfw_hook;
 mod gui_renderer;
 mod input_handler;
 mod mirror_capture;
+mod nbb_client;
+mod nbb_data;
+mod nbb_format;
+mod nbb_overlay;
 pub mod mode_system;
 mod overlay;
 mod perf_stats;
@@ -116,10 +123,10 @@ pub(crate) fn apply_log_filter(cfg: &tuxinjector_config::Config) {
         parts.push("tuxinjector::dlsym_hook=debug");
         parts.push("tuxinjector::gl_resolve=debug");
     }
-    if d.log_cursor_textures {
+    if d.log_overlay {
         parts.push("tuxinjector::overlay=debug");
+        parts.push("tuxinjector::cursor_system=debug");
     }
-
     let combined = parts.join(",");
     match EnvFilter::try_new(&combined) {
         Ok(f) => update(f),

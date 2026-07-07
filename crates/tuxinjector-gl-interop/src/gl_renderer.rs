@@ -320,6 +320,42 @@ struct FilterLocs {
     uv_bounds: GLint,
 }
 
+// Batched textured quads with per-vertex color, used by the cursor trail
+// (port of toolscreen's QuadBatch). Vertices arrive pre-converted to NDC.
+const TRAIL_VERT: &str = r#"#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aTexCoord;
+layout(location = 2) in vec4 aColor;
+out vec2 fragTexCoord;
+out vec4 fragColor;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    fragTexCoord = aTexCoord;
+    fragColor = aColor;
+}
+"#;
+
+const TRAIL_FRAG: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D uTexture;
+in vec2 fragTexCoord;
+in vec4 fragColor;
+out vec4 FragColor;
+void main() {
+    FragColor = texture(uTexture, fragTexCoord) * fragColor;
+}
+"#;
+
+/// One trail vertex: NDC position, UV, and straight (non-premultiplied) RGBA
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TrailVertex {
+    pub pos: [f32; 2],
+    pub uv: [f32; 2],
+    pub rgba: [f32; 4],
+}
+
 // ---- GlOverlayRenderer ----
 
 // Compiled custom fragment shader with cached locations
@@ -337,15 +373,19 @@ pub struct GlOverlayRenderer {
     border_prog: GLuint,
     passthrough_prog: GLuint,
     filter_prog: GLuint,
+    trail_prog: GLuint,
 
     solid_locs: SolidLocs,
     gradient_locs: GradientLocs,
     border_locs: BorderLocs,
     pt_locs: PassthroughLocs,
     filt_locs: FilterLocs,
+    trail_tex_loc: GLint,
 
     quad_vao: GLuint,
     quad_vbo: GLuint,
+    trail_vao: GLuint,
+    trail_vbo: GLuint,
 
     gui_tex: GLuint,
     gui_w: u32,
@@ -368,6 +408,7 @@ impl GlOverlayRenderer {
         let border_prog = link_program(gl, BORDER_VERT, BORDER_FRAG)?;
         let passthrough_prog = link_program(gl, PASSTHROUGH_VERT, PASSTHROUGH_FRAG)?;
         let filter_prog = link_program(gl, FILTER_VERT, FILTER_FRAG)?;
+        let trail_prog = link_program(gl, TRAIL_VERT, TRAIL_FRAG)?;
 
         let solid_locs = SolidLocs {
             color: (gl.get_uniform_location)(solid_prog, b"uColor\0".as_ptr() as *const _),
@@ -435,11 +476,31 @@ impl GlOverlayRenderer {
         (gl.bind_vertex_array)(0);
         (gl.bind_buffer)(GL_ARRAY_BUFFER, 0);
 
+        let trail_tex_loc =
+            (gl.get_uniform_location)(trail_prog, b"uTexture\0".as_ptr() as *const _);
+
+        // trail batch VAO/VBO: pos.xy, uv.xy, rgba (8 floats), reuploaded per draw
+        let mut trail_vao: GLuint = 0;
+        let mut trail_vbo: GLuint = 0;
+        (gl.gen_vertex_arrays)(1, &mut trail_vao);
+        (gl.gen_buffers)(1, &mut trail_vbo);
+        (gl.bind_vertex_array)(trail_vao);
+        (gl.bind_buffer)(GL_ARRAY_BUFFER, trail_vbo);
+        let tstride = (8 * std::mem::size_of::<f32>()) as GLsizei;
+        (gl.enable_vertex_attrib_array)(0);
+        (gl.vertex_attrib_pointer)(0, 2, GL_FLOAT, GL_FALSE, tstride, ptr::null());
+        (gl.enable_vertex_attrib_array)(1);
+        (gl.vertex_attrib_pointer)(1, 2, GL_FLOAT, GL_FALSE, tstride, (2 * std::mem::size_of::<f32>()) as *const c_void);
+        (gl.enable_vertex_attrib_array)(2);
+        (gl.vertex_attrib_pointer)(2, 4, GL_FLOAT, GL_FALSE, tstride, (4 * std::mem::size_of::<f32>()) as *const c_void);
+        (gl.bind_vertex_array)(0);
+        (gl.bind_buffer)(GL_ARRAY_BUFFER, 0);
+
         // persistent GUI texture
         let mut gui_tex: GLuint = 0;
         (gl.gen_textures)(1, &mut gui_tex);
 
-        tracing::info!("GlOverlayRenderer initialized (5 programs)");
+        tracing::info!("GlOverlayRenderer initialized (6 programs)");
 
         Ok(Self {
             solid_prog,
@@ -447,13 +508,17 @@ impl GlOverlayRenderer {
             border_prog,
             passthrough_prog,
             filter_prog,
+            trail_prog,
             solid_locs,
             gradient_locs,
             border_locs,
             pt_locs,
             filt_locs,
+            trail_tex_loc,
             quad_vao,
             quad_vbo,
+            trail_vao,
+            trail_vbo,
             gui_tex,
             gui_w: 0,
             gui_h: 0,
@@ -660,6 +725,12 @@ impl GlOverlayRenderer {
                         );
                     }
                 }
+                SceneElement::TrailBatch { gl_texture, verts, additive } => {
+                    if *gl_texture == 0 || verts.is_empty() {
+                        continue;
+                    }
+                    self.draw_trail_batch(gl, *gl_texture, verts, *additive);
+                }
             }
         }
 
@@ -676,6 +747,34 @@ impl GlOverlayRenderer {
     }
 
     // ---- Per-element draw helpers ----
+
+    unsafe fn draw_trail_batch(
+        &mut self, gl: &GlFns,
+        tex: GLuint, verts: &[TrailVertex], additive: bool,
+    ) {
+        (gl.use_program)(self.trail_prog);
+        (gl.bind_vertex_array)(self.trail_vao);
+        (gl.bind_buffer)(GL_ARRAY_BUFFER, self.trail_vbo);
+        let bytes = std::mem::size_of_val(verts) as GLsizeiptr;
+        (gl.buffer_data)(GL_ARRAY_BUFFER, bytes, verts.as_ptr() as *const c_void, GL_DYNAMIC_DRAW);
+
+        (gl.active_texture)(GL_TEXTURE0);
+        (gl.bind_texture)(GL_TEXTURE_2D, tex);
+        (gl.uniform_1i)(self.trail_tex_loc, 0);
+
+        if additive {
+            (gl.blend_func_separate)(GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        (gl.draw_arrays)(GL_TRIANGLES, 0, verts.len() as GLsizei);
+        if additive {
+            // back to the canonical compositor blend for later elements
+            (gl.blend_func_separate)(
+                GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
+            );
+        }
+        (gl.bind_buffer)(GL_ARRAY_BUFFER, 0);
+    }
 
     unsafe fn draw_solid(
         &self, gl: &GlFns,
@@ -1127,7 +1226,7 @@ impl GlOverlayRenderer {
     pub unsafe fn destroy(&mut self, gl: &GlFns) {
         for prog in [
             self.solid_prog, self.gradient_prog, self.border_prog,
-            self.passthrough_prog, self.filter_prog,
+            self.passthrough_prog, self.filter_prog, self.trail_prog,
         ] {
             if prog != 0 { (gl.delete_program)(prog); }
         }
@@ -1136,6 +1235,7 @@ impl GlOverlayRenderer {
         self.border_prog = 0;
         self.passthrough_prog = 0;
         self.filter_prog = 0;
+        self.trail_prog = 0;
 
         if self.quad_vbo != 0 {
             (gl.delete_buffers)(1, &self.quad_vbo);
@@ -1144,6 +1244,14 @@ impl GlOverlayRenderer {
         if self.quad_vao != 0 {
             (gl.delete_vertex_arrays)(1, &self.quad_vao);
             self.quad_vao = 0;
+        }
+        if self.trail_vbo != 0 {
+            (gl.delete_buffers)(1, &self.trail_vbo);
+            self.trail_vbo = 0;
+        }
+        if self.trail_vao != 0 {
+            (gl.delete_vertex_arrays)(1, &self.trail_vao);
+            self.trail_vao = 0;
         }
         if self.gui_tex != 0 {
             (gl.delete_textures)(1, &self.gui_tex);
@@ -1306,6 +1414,13 @@ pub enum SceneElement {
         uv_rect: Option<[f32; 4]>,
         custom_shader: Option<String>,
     },
+    // Cursor-trail stamp batch: one draw of textured, per-vertex-colored
+    // quads referencing the trail sprite texture. Vertices are NDC.
+    TrailBatch {
+        gl_texture: u32,
+        verts: Vec<TrailVertex>,
+        additive: bool,
+    },
 }
 
 /// Full overlay frame ready to render
@@ -1393,6 +1508,19 @@ impl SceneDescription {
                     tex_height.hash(&mut h);
                     // mirror content changes every frame, always treat as dirty
                     h.write_u64(0xDEAD_BEEF_CAFE_BABE);
+                }
+                SceneElement::TrailBatch { gl_texture, verts, additive } => {
+                    7u8.hash(&mut h);
+                    gl_texture.hash(&mut h);
+                    additive.hash(&mut h);
+                    h.write_usize(verts.len());
+                    // stamps fade every frame; hash positions + alphas so the
+                    // frame-skip cache never freezes a decaying trail
+                    for v in verts {
+                        v.pos[0].to_bits().hash(&mut h);
+                        v.pos[1].to_bits().hash(&mut h);
+                        v.rgba[3].to_bits().hash(&mut h);
+                    }
                 }
             }
         }

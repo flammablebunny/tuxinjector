@@ -425,6 +425,11 @@ pub(crate) unsafe fn link_program(gl: &GlFns, vert_src: &str, frag_src: &str) ->
     // attribs manually. Harmless no-op on Linux where layouts already work.
     (gl.bind_attrib_location)(prog, 0, b"aPos\0".as_ptr() as *const _);
     (gl.bind_attrib_location)(prog, 1, b"aTexCoord\0".as_ptr() as *const _);
+    // The cursor-trail program adds a per-vertex color at index 2. GLSL 1.20
+    // strips layout(location=N), so bind it here or macOS auto-assigns the slot
+    // and the trail samples color from the wrong attribute. No-op for the other
+    // programs (GL ignores bindings for attribute names they don't declare).
+    (gl.bind_attrib_location)(prog, 2, b"aColor\0".as_ptr() as *const _);
 
     (gl.link_program)(prog);
 

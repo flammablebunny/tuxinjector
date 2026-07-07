@@ -434,6 +434,13 @@ unsafe fn dlsym_hook_impl(handle: *mut c_void, symbol: *const c_char) -> *mut c_
 
         b"glfwSetWindowTitle" => hook!(crate::window_state::store_real_set_window_title, crate::window_state::hooked_glfw_set_window_title),
 
+        // Custom-cursor feature: stash create/destroy for our own use (the
+        // caller gets the real pointers), interpose set so we can keep our
+        // cursor installed / restore the game's on disable.
+        b"glfwCreateCursor"  => { let p = real_dlsym()(handle, symbol); if !p.is_null() { crate::glfw_hook::store_real_create_cursor(p); } p }
+        b"glfwDestroyCursor" => { let p = real_dlsym()(handle, symbol); if !p.is_null() { crate::glfw_hook::store_real_destroy_cursor(p); } p }
+        b"glfwSetCursor"     => hook!(crate::glfw_hook::store_real_set_cursor, crate::glfw_hook::glfwSetCursor),
+
         // Stash the real ptr so we can programmatically center the cursor on
         // menu open (ICM prevention). We don't override this -- just return the
         // real function to the caller.

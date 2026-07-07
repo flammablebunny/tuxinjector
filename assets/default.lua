@@ -384,14 +384,51 @@ local eyezoom = {
 }
 
 -- ============================================================================
+-- Ninjabrain Bot API overlay
+-- ============================================================================
+
+-- Renders Ninjabrain Bot's calculator output as an in-game overlay via its
+-- HTTP API (enable it in NBB: Settings -> Advanced -> Enable API). The full
+-- option set (colors, columns, margins, presets) lives in the GUI tab.
+local ninjabrain = {
+    enabled = false,
+    apiBaseUrl = "http://127.0.0.1:52533",
+    overlayScale = 0.56,
+    x = 4,
+    y = -5,
+    relativeTo = "bottomLeftScreen",
+}
+
+-- ============================================================================
 -- Cursors
 -- ============================================================================
 
+-- Custom cursor per game state. cursorName is a file (stem or full name) in
+-- ~/.config/tuxinjector/cursors/; "" leaves the real cursor untouched.
+-- Everything that isn't title or wall (waiting, generating, inworld) uses
+-- the ingame cursor. Hotspots are fractions; .cur/.ico file hotspots win.
 local cursors = {
     enabled = false,
-    title = { cursorName = "Arrow", cursorSize = 32 },
-    wall = { cursorName = "Arrow", cursorSize = 32 },
-    ingame = { cursorName = "Cross (Inverted, medium)", cursorSize = 32 },
+    title = { cursorName = "", cursorSize = 32, hotspotX = 0.0, hotspotY = 0.0 },
+    wall = { cursorName = "", cursorSize = 32, hotspotX = 0.0, hotspotY = 0.0 },
+    ingame = { cursorName = "", cursorSize = 32, hotspotX = 0.5, hotspotY = 0.5 },
+}
+
+-- Trail of fading sprite stamps behind the cursor
+local cursorTrail = {
+    enabled = false,
+    lifetimeMs = 150,           -- 50-500
+    stampSpacingPx = 1,         -- 1-64
+    spriteSizePx = 11,          -- 4-256
+    tailSizeScale = 0.7,        -- 0.0-2.0, size of oldest stamp relative to newest
+    useVelocitySize = false,
+    velocitySizeIntensity = 0.5,
+    color = {255, 255, 255},
+    useGradient = false,        -- fade head color to tailColor with age
+    tailColor = {0, 0, 0},
+    opacity = 0.8,
+    blendMode = "Alpha",        -- "Alpha" or "Additive"
+    spritePath = "",            -- custom stamp PNG (max 256x256), "" = soft dot
 }
 
 -- ============================================================================
@@ -415,9 +452,11 @@ return {
 
     theme = {
         cursors = cursors,
+        cursorTrail = cursorTrail,
     },
 
     overlays = {
+        ninjabrain = ninjabrain,
         mirrors = mirrors,
         mirrorGroups = mirrorGroups,
         images = images,

@@ -215,9 +215,12 @@ impl SettingsApp {
                             captured_key,
                         );
                     }
-                    // if let Some(_tab) = ui.tab_item("Cursors") {
-                    //     crate::tabs::cursors::render(ui, &mut self.draft, &mut self.dirty);
-                    // }
+                    if let Some(_tab) = ui.tab_item("Ninjabrain") {
+                        crate::tabs::ninjabrain::render(ui, &mut self.draft, &mut self.dirty);
+                    }
+                    if let Some(_tab) = ui.tab_item("Cursors") {
+                        crate::tabs::cursors::render(ui, &mut self.draft, &mut self.dirty);
+                    }
                     if let Some(_tab) = ui.tab_item("Appearance") {
                         crate::tabs::appearance::render(ui, &mut self.draft, &mut self.dirty);
                     }

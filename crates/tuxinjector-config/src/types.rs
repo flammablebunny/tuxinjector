@@ -1129,8 +1129,6 @@ pub struct DebugGlobalConfig {
     #[serde(default)]
     pub show_hotkey_debug: bool,
     #[serde(default)]
-    pub fake_cursor: bool,
-    #[serde(default)]
     pub show_texture_grid: bool,
     #[serde(default)]
     pub delay_rendering_until_finished: bool,
@@ -1163,7 +1161,7 @@ pub struct DebugGlobalConfig {
     #[serde(default)]
     pub log_init: bool,
     #[serde(default)]
-    pub log_cursor_textures: bool,
+    pub log_overlay: bool,
 }
 
 impl Default for DebugGlobalConfig {
@@ -1174,7 +1172,6 @@ impl Default for DebugGlobalConfig {
             show_profiler: false,
             profiler_scale: 0.8,
             show_hotkey_debug: false,
-            fake_cursor: false,
             show_texture_grid: false,
             delay_rendering_until_finished: false,
             delay_rendering_until_blitted: false,
@@ -1191,23 +1188,21 @@ impl Default for DebugGlobalConfig {
             log_texture_ops: false,
             log_gui: false,
             log_init: false,
-            log_cursor_textures: false,
+            log_overlay: false,
         }
     }
 }
 
 // --- Cursors ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CursorConfig {
-    #[serde(default)]
     pub cursor_name: String,
-    #[serde(default = "defaults::cursor_size")]
     pub cursor_size: i32,
-    #[serde(default)]
+    // hotspot as a fraction of the image (0.0-1.0). Note: for .cur/.ico the
+    // hotspot baked into the file takes priority over whatever's set here.
     pub hotspot_x: f32,
-    #[serde(default)]
     pub hotspot_y: f32,
 }
 
@@ -1215,24 +1210,21 @@ impl Default for CursorConfig {
     fn default() -> Self {
         Self {
             cursor_name: String::new(),
-            cursor_size: 64,
+            cursor_size: defaults::cursor_size(),
             hotspot_x: 0.0,
             hotspot_y: 0.0,
         }
     }
 }
 
-// Per-game-state cursor (title screen, wall, ingame)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// Per-game-state cursor. Bucketing follows toolscreen: "title" -> title,
+// "wall" -> wall, everything else (waiting/generating/inworld) -> ingame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CursorsConfig {
-    #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
     pub title: CursorConfig,
-    #[serde(default)]
     pub wall: CursorConfig,
-    #[serde(default)]
     pub ingame: CursorConfig,
 }
 
@@ -1242,7 +1234,63 @@ impl Default for CursorsConfig {
             enabled: false,
             title: CursorConfig::default(),
             wall: CursorConfig::default(),
-            ingame: CursorConfig::default(),
+            ingame: CursorConfig { hotspot_x: 0.5, hotspot_y: 0.5, ..CursorConfig::default() },
+        }
+    }
+}
+
+// Trail of fading sprite stamps behind the cursor (toolscreen cursorTrail).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CursorTrailConfig {
+    pub enabled: bool,
+    pub lifetime_ms: i32,
+    pub stamp_spacing_px: i32,
+    pub sprite_size_px: i32,
+    pub tail_size_scale: f32,
+    pub use_velocity_size: bool,
+    pub velocity_size_intensity: f32,
+    pub color: Color,
+    pub use_gradient: bool,
+    pub tail_color: Color,
+    pub opacity: f32,
+    pub blend_mode: String,
+    pub sprite_path: String,
+}
+
+impl Default for CursorTrailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            lifetime_ms: 150,
+            stamp_spacing_px: 1,
+            sprite_size_px: 11,
+            tail_size_scale: 0.7,
+            use_velocity_size: false,
+            velocity_size_intensity: 0.5,
+            color: Color::WHITE,
+            use_gradient: false,
+            tail_color: Color::BLACK,
+            opacity: 0.8,
+            blend_mode: "Alpha".to_string(),
+            sprite_path: String::new(),
+        }
+    }
+}
+
+impl CursorTrailConfig {
+    // Toolscreen clamps on load, but we hot-reload and let people hand-edit
+    // the Lua, so clamp at the point of use instead - keeps bad values from
+    // sticking around.
+    pub fn clamped(&self) -> Self {
+        Self {
+            lifetime_ms: self.lifetime_ms.clamp(50, 500),
+            stamp_spacing_px: self.stamp_spacing_px.clamp(1, 64),
+            sprite_size_px: self.sprite_size_px.clamp(4, 256),
+            tail_size_scale: self.tail_size_scale.clamp(0.0, 2.0),
+            velocity_size_intensity: self.velocity_size_intensity.clamp(0.0, 1.0),
+            opacity: self.opacity.clamp(0.0, 1.0),
+            ..self.clone()
         }
     }
 }
@@ -1470,6 +1518,8 @@ pub struct ThemeConfig {
     pub appearance: AppearanceConfig,
     #[serde(default)]
     pub cursors: CursorsConfig,
+    #[serde(default)]
+    pub cursor_trail: CursorTrailConfig,
 }
 
 impl Default for ThemeConfig {
@@ -1477,13 +1527,363 @@ impl Default for ThemeConfig {
         Self {
             font_path: String::new(),
             appearance: AppearanceConfig::default(),
-            cursors: CursorsConfig {
-                enabled: false,
-                title: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.0, hotspot_y: 0.0 },
-                wall: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.0, hotspot_y: 0.0 },
-                ingame: CursorConfig { cursor_name: String::new(), cursor_size: 32, hotspot_x: 0.5, hotspot_y: 0.5 },
-            },
+            cursors: CursorsConfig::default(),
+            cursor_trail: CursorTrailConfig::default(),
         }
+    }
+}
+
+// --- Ninjabrain Bot API overlay ---
+//
+// Straight 1:1 port of toolscreen's NinjabrainOverlayConfig (gui.h:847-984).
+// Lua keys line up with toolscreen's TOML keys through serde camelCase. Colors
+// go through tux's Color, which happily takes either 0-255 or 0-1 arrays.
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NinjabrainColumnConfig {
+    pub id: String,
+    pub header: String,
+    pub show: bool,
+    pub static_width: i32,
+}
+
+impl Default for NinjabrainColumnConfig {
+    fn default() -> Self {
+        Self { id: String::new(), header: String::new(), show: true, static_width: 0 }
+    }
+}
+
+pub fn default_nbb_columns() -> Vec<NinjabrainColumnConfig> {
+    let col = |id: &str, header: &str| NinjabrainColumnConfig {
+        id: id.to_string(),
+        header: header.to_string(),
+        show: true,
+        static_width: 0,
+    };
+    vec![
+        col("coords", "Chunk"),
+        col("certainty", "%"),
+        col("distance", "Dist."),
+        col("nether", "Nether"),
+        col("angle", "Angle"),
+    ]
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NinjabrainOverlayConfig {
+    pub enabled: bool,
+    pub x: i32,
+    pub y: i32,
+    pub relative_to: String,
+    pub custom_font_path: String,
+    pub api_base_url: String,
+    pub font_antialiasing: bool,
+    pub bg_enabled: bool,
+    pub bg_opacity: f32,
+    pub bg_color: Color,
+    pub show_throw_details: bool,
+    pub show_direction_to_stronghold: bool,
+    pub static_column_widths: bool,
+    pub border_width: i32,
+    pub border_radius: f32,
+    pub corner_radius: f32,
+    pub header_fill_color: Color,
+    pub coords_display: String,
+    pub border_color: Color,
+    pub divider_color: Color,
+    pub header_divider_color: Color,
+    pub outline_width: i32,
+    pub outline_color: Color,
+    pub text_color: Color,
+    pub data_color: Color,
+    pub throws_text_color: Color,
+    pub divine_text_color: Color,
+    pub throws_background_color: Color,
+    pub coord_positive_color: Color,
+    pub coord_negative_color: Color,
+    pub certainty_color: Color,
+    pub certainty_mid_color: Color,
+    pub certainty_low_color: Color,
+    pub subpixel_positive_color: Color,
+    pub subpixel_negative_color: Color,
+    pub allowed_modes: Vec<String>,
+    pub overlay_opacity: f32,
+    pub overlay_scale: f32,
+    pub hide_if_stale: bool,
+    pub hide_if_stale_delay_seconds: i32,
+    pub shown_predictions: i32,
+    pub always_show: bool,
+    pub row_spacing: f32,
+    pub side_padding: f32,
+    pub section_layout_mode: String,
+    pub content_padding_top: f32,
+    pub content_padding_bottom: f32,
+    pub results_margin_left: f32,
+    pub results_margin_right: f32,
+    pub results_margin_top: f32,
+    pub results_margin_bottom: f32,
+    pub results_header_padding_y: f32,
+    pub results_column_gap: f32,
+    pub results_anchor: String,
+    pub results_offset_x: f32,
+    pub results_offset_y: f32,
+    pub results_draw_order: i32,
+    pub information_messages_placement: String,
+    pub information_messages_font_scale: f32,
+    pub information_messages_min_width: f32,
+    pub information_messages_margin_left: f32,
+    pub information_messages_margin_right: f32,
+    pub information_messages_margin_top: f32,
+    pub information_messages_margin_bottom: f32,
+    pub information_messages_icon_text_margin: f32,
+    pub information_messages_icon_scale: f32,
+    pub information_messages_anchor: String,
+    pub information_messages_offset_x: f32,
+    pub information_messages_offset_y: f32,
+    pub information_messages_draw_order: i32,
+    pub throws_margin_left: f32,
+    pub throws_margin_right: f32,
+    pub throws_margin_top: f32,
+    pub throws_margin_bottom: f32,
+    pub throws_header_padding_y: f32,
+    pub throws_row_padding_y: f32,
+    pub eye_throw_rows: i32,
+    pub throws_anchor: String,
+    pub throws_offset_x: f32,
+    pub throws_offset_y: f32,
+    pub throws_draw_order: i32,
+    pub failure_margin_left: f32,
+    pub failure_margin_right: f32,
+    pub failure_margin_top: f32,
+    pub failure_margin_bottom: f32,
+    pub failure_line_gap: f32,
+    pub failure_anchor: String,
+    pub failure_offset_x: f32,
+    pub failure_offset_y: f32,
+    pub failure_draw_order: i32,
+    pub blind_margin_left: f32,
+    pub blind_margin_right: f32,
+    pub blind_margin_top: f32,
+    pub blind_margin_bottom: f32,
+    pub blind_line_gap: f32,
+    pub blind_anchor: String,
+    pub blind_offset_x: f32,
+    pub blind_offset_y: f32,
+    pub blind_draw_order: i32,
+    pub always_show_boat: bool,
+    pub show_boat_state_in_top_bar: bool,
+    pub boat_state_size: f32,
+    pub boat_state_margin_right: f32,
+    pub columns: Vec<NinjabrainColumnConfig>,
+}
+
+impl Default for NinjabrainOverlayConfig {
+    fn default() -> Self {
+        let c = |r: f32, g: f32, b: f32, a: f32| Color { r, g, b, a };
+        Self {
+            enabled: false,
+            x: 4,
+            y: -5,
+            relative_to: "bottomLeftScreen".to_string(),
+            custom_font_path: String::new(),
+            api_base_url: "http://127.0.0.1:52533".to_string(),
+            font_antialiasing: true,
+            bg_enabled: true,
+            bg_opacity: 1.0,
+            bg_color: c(0.2157, 0.2353, 0.2588, 1.0),
+            show_throw_details: true,
+            show_direction_to_stronghold: true,
+            static_column_widths: true,
+            border_width: 0,
+            border_radius: 0.0,
+            corner_radius: 0.0,
+            header_fill_color: c(0.1765, 0.1961, 0.2196, 1.0),
+            coords_display: "chunk".to_string(),
+            border_color: c(0.2784, 0.2902, 0.3098, 1.0),
+            divider_color: c(0.1647, 0.1804, 0.1961, 1.0),
+            header_divider_color: c(0.1294, 0.1451, 0.1608, 1.0),
+            outline_width: 0,
+            outline_color: c(0.0, 0.0, 0.0, 0.8627),
+            text_color: c(0.898, 0.898, 0.898, 1.0),
+            data_color: c(1.0, 1.0, 1.0, 1.0),
+            throws_text_color: c(0.7529, 0.7529, 0.7529, 1.0),
+            divine_text_color: c(0.898, 0.898, 0.898, 1.0),
+            throws_background_color: c(0.20, 0.2196, 0.2392, 1.0),
+            coord_positive_color: c(1.0, 1.0, 1.0, 1.0),
+            coord_negative_color: c(1.0, 0.451, 0.451, 1.0),
+            certainty_color: c(0.0, 0.8078, 0.1608, 1.0),
+            certainty_mid_color: c(1.0, 1.0, 0.0, 1.0),
+            certainty_low_color: c(1.0, 0.0, 0.0, 1.0),
+            subpixel_positive_color: c(0.4588, 0.8, 0.4235, 1.0),
+            subpixel_negative_color: c(0.8, 0.4314, 0.4471, 1.0),
+            allowed_modes: Vec::new(),
+            overlay_opacity: 1.0,
+            overlay_scale: 0.56,
+            hide_if_stale: false,
+            hide_if_stale_delay_seconds: 30,
+            shown_predictions: 5,
+            always_show: false,
+            row_spacing: 4.0,
+            side_padding: 20.0,
+            section_layout_mode: "flow".to_string(),
+            content_padding_top: 0.0,
+            content_padding_bottom: 0.0,
+            results_margin_left: 0.0,
+            results_margin_right: 0.0,
+            results_margin_top: 0.0,
+            results_margin_bottom: 0.0,
+            results_header_padding_y: 2.0,
+            results_column_gap: 0.0,
+            results_anchor: "topLeft".to_string(),
+            results_offset_x: 0.0,
+            results_offset_y: 0.0,
+            results_draw_order: 0,
+            information_messages_placement: "middle".to_string(),
+            information_messages_font_scale: 1.0,
+            information_messages_min_width: 420.0,
+            information_messages_margin_left: 0.0,
+            information_messages_margin_right: 0.0,
+            information_messages_margin_top: 0.0,
+            information_messages_margin_bottom: 0.0,
+            information_messages_icon_text_margin: 8.0,
+            information_messages_icon_scale: 1.0,
+            information_messages_anchor: "topLeft".to_string(),
+            information_messages_offset_x: 0.0,
+            information_messages_offset_y: 0.0,
+            information_messages_draw_order: 1,
+            throws_margin_left: 0.0,
+            throws_margin_right: 0.0,
+            throws_margin_top: 4.0,
+            throws_margin_bottom: 0.0,
+            throws_header_padding_y: 3.0,
+            throws_row_padding_y: 3.0,
+            eye_throw_rows: 3,
+            throws_anchor: "topLeft".to_string(),
+            throws_offset_x: 0.0,
+            throws_offset_y: 0.0,
+            throws_draw_order: 2,
+            failure_margin_left: 0.0,
+            failure_margin_right: 0.0,
+            failure_margin_top: 0.0,
+            failure_margin_bottom: 0.0,
+            failure_line_gap: 8.0,
+            failure_anchor: "topLeft".to_string(),
+            failure_offset_x: 0.0,
+            failure_offset_y: 0.0,
+            failure_draw_order: 0,
+            blind_margin_left: 0.0,
+            blind_margin_right: 0.0,
+            blind_margin_top: 0.0,
+            blind_margin_bottom: 0.0,
+            blind_line_gap: 8.0,
+            blind_anchor: "topLeft".to_string(),
+            blind_offset_x: 0.0,
+            blind_offset_y: 0.0,
+            blind_draw_order: 0,
+            always_show_boat: false,
+            show_boat_state_in_top_bar: false,
+            boat_state_size: 64.0,
+            boat_state_margin_right: 8.0,
+            columns: default_nbb_columns(),
+        }
+    }
+}
+
+impl NinjabrainOverlayConfig {
+    /// Toolscreen clamps these ranges on config parse; tux clamps at use so
+    /// hand-edited configs self-heal identically.
+    pub fn sanitized(&self) -> Self {
+        let mut s = self.clone();
+        let anchor = |a: &str| -> String {
+            match a {
+                "topLeft" | "topRight" | "bottomLeft" | "bottomRight" => a.to_string(),
+                _ => "topLeft".to_string(),
+            }
+        };
+        s.api_base_url = {
+            let t = s.api_base_url.trim().trim_end_matches('/').to_string();
+            if t.is_empty() { "http://127.0.0.1:52533".to_string() } else { t }
+        };
+        s.overlay_opacity = s.overlay_opacity.clamp(0.0, 1.0);
+        s.overlay_scale = s.overlay_scale.clamp(0.05, 1.0);
+        s.bg_opacity = s.bg_opacity.clamp(0.0, 1.0);
+        s.border_width = s.border_width.clamp(0, 8);
+        s.border_radius = s.border_radius.clamp(0.0, 160.0);
+        s.corner_radius = s.corner_radius.clamp(0.0, 160.0);
+        s.outline_width = s.outline_width.clamp(0, 5);
+        s.side_padding = s.side_padding.clamp(0.0, 200.0);
+        s.row_spacing = s.row_spacing.clamp(0.0, 30.0);
+        s.content_padding_top = s.content_padding_top.clamp(0.0, 160.0);
+        s.content_padding_bottom = s.content_padding_bottom.clamp(0.0, 160.0);
+        for m in [
+            &mut s.results_margin_left, &mut s.results_margin_right,
+            &mut s.information_messages_margin_left, &mut s.information_messages_margin_right,
+            &mut s.throws_margin_left, &mut s.throws_margin_right,
+            &mut s.failure_margin_left, &mut s.failure_margin_right,
+            &mut s.blind_margin_left, &mut s.blind_margin_right,
+        ] {
+            *m = m.clamp(0.0, 400.0);
+        }
+        for m in [
+            &mut s.results_margin_top, &mut s.results_margin_bottom,
+            &mut s.information_messages_margin_top, &mut s.information_messages_margin_bottom,
+            &mut s.throws_margin_top, &mut s.throws_margin_bottom,
+            &mut s.failure_margin_top, &mut s.failure_margin_bottom,
+            &mut s.blind_margin_top, &mut s.blind_margin_bottom,
+        ] {
+            *m = m.clamp(0.0, 160.0);
+        }
+        s.results_header_padding_y = s.results_header_padding_y.clamp(0.0, 48.0);
+        s.throws_header_padding_y = s.throws_header_padding_y.clamp(0.0, 48.0);
+        s.throws_row_padding_y = s.throws_row_padding_y.clamp(0.0, 48.0);
+        s.results_column_gap = s.results_column_gap.clamp(0.0, 200.0);
+        s.failure_line_gap = s.failure_line_gap.clamp(0.0, 96.0);
+        s.blind_line_gap = s.blind_line_gap.clamp(0.0, 96.0);
+        s.results_anchor = anchor(&s.results_anchor);
+        s.information_messages_anchor = anchor(&s.information_messages_anchor);
+        s.throws_anchor = anchor(&s.throws_anchor);
+        s.failure_anchor = anchor(&s.failure_anchor);
+        s.blind_anchor = anchor(&s.blind_anchor);
+        for o in [
+            &mut s.results_offset_x, &mut s.results_offset_y,
+            &mut s.information_messages_offset_x, &mut s.information_messages_offset_y,
+            &mut s.throws_offset_x, &mut s.throws_offset_y,
+            &mut s.failure_offset_x, &mut s.failure_offset_y,
+            &mut s.blind_offset_x, &mut s.blind_offset_y,
+        ] {
+            *o = o.clamp(0.0, 1000.0);
+        }
+        for d in [
+            &mut s.results_draw_order, &mut s.information_messages_draw_order,
+            &mut s.throws_draw_order, &mut s.failure_draw_order, &mut s.blind_draw_order,
+        ] {
+            *d = (*d).clamp(0, 32);
+        }
+        s.boat_state_size = s.boat_state_size.clamp(8.0, 128.0);
+        s.boat_state_margin_right = s.boat_state_margin_right.clamp(0.0, 160.0);
+        if !matches!(s.information_messages_placement.as_str(), "top" | "middle" | "bottom") {
+            s.information_messages_placement = "middle".to_string();
+        }
+        s.information_messages_font_scale = s.information_messages_font_scale.clamp(0.4, 3.0);
+        s.information_messages_min_width = s.information_messages_min_width.clamp(120.0, 1200.0);
+        s.information_messages_icon_text_margin =
+            s.information_messages_icon_text_margin.clamp(0.0, 96.0);
+        s.information_messages_icon_scale = s.information_messages_icon_scale.clamp(0.25, 4.0);
+        s.eye_throw_rows = s.eye_throw_rows.clamp(1, 8);
+        s.hide_if_stale_delay_seconds = s.hide_if_stale_delay_seconds.clamp(1, 3600);
+        if !matches!(s.coords_display.as_str(), "block" | "chunk") {
+            s.coords_display = "chunk".to_string();
+        }
+        if !matches!(s.section_layout_mode.as_str(), "flow" | "manual") {
+            s.section_layout_mode = "flow".to_string();
+        }
+        s.shown_predictions = s.shown_predictions.clamp(1, 5);
+        if s.columns.is_empty() {
+            s.columns = default_nbb_columns();
+        }
+        s
     }
 }
 
@@ -1492,6 +1892,8 @@ impl Default for ThemeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OverlaysConfig {
+    #[serde(default)]
+    pub ninjabrain: NinjabrainOverlayConfig,
     #[serde(default)]
     pub mirrors: Vec<MirrorConfig>,
     #[serde(default)]
@@ -1511,6 +1913,7 @@ pub struct OverlaysConfig {
 impl Default for OverlaysConfig {
     fn default() -> Self {
         Self {
+            ninjabrain: NinjabrainOverlayConfig::default(),
             mirrors: vec![
                 // Pie chart -- the F3+S pie area, color passthrough with static circle border
                 MirrorConfig {
@@ -1748,6 +2151,8 @@ pub struct GlobalHotkeysConfig {
     #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
     pub app_visibility: Vec<u32>,
     #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
+    pub ninjabrain_overlay: Vec<u32>,
+    #[serde(default, deserialize_with = "crate::key_names::deserialize_keycode_vec", serialize_with = "crate::key_names::serialize_keycode_vec")]
     pub launch_apps: Vec<u32>,
     // which companion apps the "Launch Companion Apps" hotkey actually fires up
     #[serde(default = "defaults::bool_true")]
@@ -1766,6 +2171,7 @@ impl Default for GlobalHotkeysConfig {
             image_overlays: Vec::new(),
             window_overlays: Vec::new(),
             app_visibility: Vec::new(),
+            ninjabrain_overlay: Vec::new(),
             launch_apps: Vec::new(),
             launch_nbb: true,
             launch_paceman: true,
