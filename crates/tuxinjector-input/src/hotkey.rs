@@ -327,7 +327,7 @@ impl HotkeyEngine {
                 continue;
             }
 
-            if self.check_match(bind, action) {
+            if self.check_match(bind, key, scancode, action) {
                 // debounce check
                 if let Some(last) = self.last_fire.get(&i) {
                     if last.elapsed().as_millis() < bind.debounce_ms as u128 {
@@ -348,7 +348,7 @@ impl HotkeyEngine {
         (consumed, out)
     }
 
-    fn check_match(&self, bind: &Binding, action: i32) -> bool {
+    fn check_match(&self, bind: &Binding, key: i32, scancode: i32, action: i32) -> bool {
         // Only enforce the game-state condition if we actually have a live state
         // source. No Hermes / State Output (or it's stale)? Then treat it as "Any"
         // so these hotkeys still fire instead of being dead.
@@ -400,7 +400,13 @@ impl HotkeyEngine {
                 remaining == bind.keys.len() - 1
             }
         } else {
-            action == GLFW_PRESS && all_held
+            // Fire only on a PRESS of one of THIS binding's own keys. Without
+            // this, pressing any unrelated key while a held combo is still down
+            // re-matches it (all_held stays true) and re-triggers the action.
+            let sc_key = tuxinjector_config::key_names::SCANCODE_OFFSET as i32 + scancode;
+            action == GLFW_PRESS
+                && all_held
+                && (bind.keys.contains(&key) || (scancode > 0 && bind.keys.contains(&sc_key)))
         }
     }
 
